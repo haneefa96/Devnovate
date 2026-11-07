@@ -1,277 +1,160 @@
-"""
-Munshi - Test memory integration
+"""Opt-in synthetic tests against the configured Hindsight Cloud service.
 
-Integration tests for Hindsight memory system.
-Run with: pytest tests/test_memory_integration.py -m integration
+Run explicitly with MUNSHI_RUN_HINDSIGHT_INTEGRATION=1. Never use real customer data.
 """
+
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
 
 import pytest
-from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from sqlalchemy.pool import StaticPool
+from sqlmodel import Session, SQLModel, create_engine, select
+
+from munshi.config import settings
 
 
 @pytest.mark.integration
-class TestMemoryIntegration:
-    """Integration tests for memory system with Hindsight."""
-    
-    @pytest.mark.asyncio
-    async def test_memory_retain_and_recall(self):
-        """Test retain and recall with Hindsight (integration test)."""
-        pytest.skip("Requires Hindsight to be running")
-        
-        from munshi.memory.queries import memory_store
-        
-        # This test requires Hindsight to be running
-        # Run with: pytest tests/test_memory_integration.py -m integration --hindsight
-        bank_name = "munshi-test"
-        
-        # Create bank
-        result = await memory_store.create_bank(bank_name)
-        assert result is not None
-        
-        # Retain an event
-        response = await memory_store.retain(
-            bank_name=bank_name,
-            timestamp=datetime.now(),
-            customer_id="cust_123",
-            invoice_id="inv_456",
-            content="Test event content",
-            tags=["test"],
+@pytest.mark.asyncio
+async def test_live_wrapper_retain_recall_and_customer_isolation():
+    if os.getenv("MUNSHI_RUN_HINDSIGHT_INTEGRATION") != "1":
+        pytest.skip("Set MUNSHI_RUN_HINDSIGHT_INTEGRATION=1 for synthetic Cloud verification")
+    if not settings.HINDSIGHT_BASE_URL or not settings.HINDSIGHT_API_KEY:
+        pytest.skip("Hindsight Cloud credentials are not configured")
+
+    from munshi.memory.client import (
+        create_bank,
+        get_hindsight_client,
+        recall_memories,
+        reflect_on_memories,
+        retain_event,
+    )
+
+    client = get_hindsight_client()
+    assert await client.check_available()
+
+    bank_id = f"eval-munshi-{uuid.uuid4().hex}-C-s1"
+    other_bank_id = f"eval-munshi-other-{uuid.uuid4().hex}-C-s2"
+    document_id = f"synthetic-{uuid.uuid4().hex}"
+    occurred_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+    customer_tag = f"customer:synthetic-{uuid.uuid4().hex[:12]}"
+    await create_bank(
+        bank_id=bank_id,
+        name="Synthetic Munshi integration test",
+        mission="Store only synthetic test facts.",
+        background="No real customer, financial, or contact information.",
+    )
+    await create_bank(
+        bank_id=other_bank_id,
+        name="Synthetic second business integration test",
+        mission="Store only synthetic test facts.",
+        background="Separate synthetic supplier bank.",
+    )
+    await create_bank(
+        bank_id=bank_id,
+        name="Synthetic Munshi integration test",
+        mission="Store only synthetic test facts.",
+        background="No real customer, financial, or contact information.",
+    )
+
+    try:
+        retained = await retain_event(
+            bank_id=bank_id,
+            content="Synthetic customer prefers invoices grouped before the monthly payment run.",
+            timestamp=occurred_at,
+            context="Synthetic integration verification",
+            metadata={"source": "synthetic-test", "customer_id": customer_tag.split(":", 1)[1]},
+            tags=[customer_tag, "kind:observation"],
+            document_id=document_id,
         )
-        assert response is not None
-        
-        # Recall events
-        events = await memory_store.recall(
-            bank_name=bank_name,
-            customer_id="cust_123",
-            kind="action",
+        assert retained["success"] is True
+        assert retained["document_id"] == document_id
+
+        recalled = await recall_memories(
+            bank_id,
+            "synthetic customer invoice grouping payment run preference",
+            tags=[customer_tag],
+            tags_match="all",
         )
-        assert len(events) >= 0  # May be empty if no events match
-    
-    @pytest.mark.asyncio
-    async def test_memory_reflect(self):
-        """Test reflect operation (integration test)."""
-        pytest.skip("Requires Hindsight to be running")
-        
-        from munshi.memory.queries import memory_store
-        
-        bank_name = "munshi-test"
-        
-        # Reflect on memories
-        result = await memory_store.reflect(
-            bank_name=bank_name,
-            customer_id="cust_123",
-            query="What are the payment patterns for this customer?",
+        matching = [item for item in recalled if item.get("document_id") == document_id]
+        assert matching
+        assert matching[0]["metadata"]["source"] == "synthetic-test"
+        assert matching[0]["timestamp"] is not None
+        reflection = await reflect_on_memories(
+            bank_id,
+            "Summarize the synthetic customer's invoice preference.",
+            tags=[customer_tag],
+            tags_match="all",
         )
-        
-        assert "requirements" in result
-        assert "conflicts" in result
-        assert "playbook" in result
-    
-    @pytest.mark.asyncio
-    async def test_memory_flow(self):
-        """Test complete memory flow (integration test)."""
-        pytest.skip("Requires Hindsight to be running")
-        
-        from munshi.memory.queries import memory_store
-        from datetime import datetime
-        
-        bank_name = "munshi-integration-test"
-        
-        # Step 1: Create bank
-        result = await memory_store.create_bank(
-            bank_name=bank_name,
-            business_name="Integration Test Business",
+        assert {"requirements", "conflicts", "playbook"} <= reflection.keys()
+
+        other_customer = await recall_memories(
+            bank_id,
+            "synthetic customer invoice grouping payment run preference",
+            tags=["customer:synthetic-other"],
+            tags_match="all",
         )
-        assert result is not None
-        
-        # Step 2: Retain multiple events
-        events = [
-            {
-                "content": "Sent invoice INV-001 on 2024-01-15",
-                "timestamp": datetime(2024, 1, 15, 10, 0, 0),
-                "customer_id": "cust_123",
-                "invoice_id": "inv_001",
-            },
-            {
-                "content": "Customer promised payment by 2024-01-20",
-                "timestamp": datetime(2024, 1, 16, 14, 0, 0),
-                "customer_id": "cust_123",
-                "invoice_id": "inv_001",
-            },
-        ]
-        
-        retained = await memory_store.retain_batch(bank_name, events)
-        assert len(retained) == 2
-        
-        # Step 3: Recall events
-        recalled = await memory_store.recall(
-            bank_name=bank_name,
-            customer_id="cust_123",
-            k=10,
+        assert all(item.get("document_id") != document_id for item in other_customer)
+        other_business = await recall_memories(
+            other_bank_id,
+            "synthetic customer invoice grouping payment run preference",
+            tags=[customer_tag],
+            tags_match="all",
         )
-        assert len(recalled) >= 2
-        
-        # Step 4: Reflect on memories
-        reflection = await memory_store.reflect(
-            bank_name=bank_name,
-            customer_id="cust_123",
-            query="What is the payment pattern?",
-        )
-        assert "playbook" in reflection
-        
-        # Step 5: Get memory for different agents
-        readiness = await memory_store.get_memory_for_readiness(
-            bank_name=bank_name,
-            customer_id="cust_123",
-        )
-        assert "requirements" in readiness
-        
-        collector = await memory_store.get_memory_for_collector(
-            bank_name=bank_name,
-            customer_id="cust_123",
-        )
-        assert "playbook" in collector
-        
-        risk = await memory_store.get_memory_for_risk(
-            bank_name=bank_name,
-            customer_id="cust_123",
-        )
-        assert "conflicts" in risk
-    
-    @pytest.mark.asyncio
-    async def test_memory_customer_isolation(self):
-        """Test that memories are isolated per customer (integration test)."""
-        pytest.skip("Requires Hindsight to be running")
-        
-        from munshi.memory.queries import memory_store
-        from datetime import datetime
-        
-        bank_name = "munshi-integration-test"
-        
-        # Create events for two different customers
-        for customer_id in ["cust_A", "cust_B"]:
-            await memory_store.retain(
-                bank_name=bank_name,
-                timestamp=datetime.now(),
-                customer_id=customer_id,
-                invoice_id=f"inv_{customer_id}",
-                content=f"Event for {customer_id}",
-                tags=[f"customer:{customer_id}"],
+        assert all(item.get("document_id") != document_id for item in other_business)
+    finally:
+        await client.aclose()
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
+async def test_live_wrapper_outbox_processing(monkeypatch):
+    if os.getenv("MUNSHI_RUN_HINDSIGHT_INTEGRATION") != "1":
+        pytest.skip("Set MUNSHI_RUN_HINDSIGHT_INTEGRATION=1 for synthetic Cloud verification")
+    if not settings.HINDSIGHT_BASE_URL or not settings.HINDSIGHT_API_KEY:
+        pytest.skip("Hindsight Cloud credentials are not configured")
+
+    from munshi.db.models import MemoryEvent
+    from munshi.memory import outbox
+    from munshi.memory.client import get_hindsight_client
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+    bank_id = f"eval-outbox-{uuid.uuid4().hex}-C-s1"
+    event_id = f"evt_synthetic_{uuid.uuid4().hex[:12]}"
+
+    with Session(engine) as session:
+        session.add(
+            MemoryEvent(
+                id=event_id,
+                bank_name=bank_id,
+                kind="observation",
+                event_type="observation",
+                content="Synthetic customer prefers a monthly grouped invoice.",
+                timestamp=datetime.now(timezone.utc),
+                metadata_={"customer_id": "synthetic-outbox-customer"},
             )
-        
-        # Recall for customer A should not include customer B's events
-        events_a = await memory_store.recall(
-            bank_name=bank_name,
-            customer_id="cust_A",
         )
-        events_b = await memory_store.recall(
-            bank_name=bank_name,
-            customer_id="cust_B",
-        )
-        
-        # Each customer should only see their own events
-        assert len(events_a) >= 1
-        assert len(events_b) >= 1
+        session.commit()
 
+    def test_session():
+        with Session(engine) as session:
+            yield session
 
-@pytest.mark.integration
-class TestOutboxIntegration:
-    """Integration tests for outbox processor."""
-    
-    @pytest.mark.asyncio
-    async def test_outbox_retry(self):
-        """Test outbox retry mechanism (integration test)."""
-        pytest.skip("Requires Hindsight to be running")
-        
-        from munshi.memory.outbox import (
-            outbox_processor,
-            queue_memory_event,
-        )
-        from datetime import datetime
-        
-        # Queue an event
-        event = await queue_memory_event(
-            bank_name="munshi-test",
-            content="Outbox test event",
-            timestamp=datetime.now(),
-        )
-        
-        assert event.id is not None
-        assert event.retained_at is None
-        
-        # Process outbox
-        await outbox_processor.process_outbox()
-        
-        # Event should be retained after processing
-        # (requires Hindsight to be available)
-
-
-async def run_all_integration_tests():
-    """Run all integration tests (for manual execution)."""
-    import asyncio
-    
-    from munshi.memory.queries import memory_store
-    from munshi.memory.outbox import outbox_processor
-    from datetime import datetime
-    
-    print("Starting integration tests...")
-    
-    # Test memory operations
-    bank_name = "munshi-integration-test"
-    
-    print(f"Creating bank: {bank_name}")
-    result = await memory_store.create_bank(
-        bank_name=bank_name,
-        business_name="Integration Test Business",
-    )
-    print(f"Bank created: {result}")
-    
-    print("Retaining events...")
-    events = [
-        {
-            "content": "Test event 1",
-            "timestamp": datetime.now(),
-            "customer_id": "cust_123",
-        },
-        {
-            "content": "Test event 2",
-            "timestamp": datetime.now(),
-            "customer_id": "cust_123",
-        },
-    ]
-    retained = await memory_store.retain_batch(bank_name, events)
-    print(f"Retained {len(retained)} events")
-    
-    print("Recalling events...")
-    recalled = await memory_store.recall(
-        bank_name=bank_name,
-        customer_id="cust_123",
-    )
-    print(f"Recalled {len(recalled)} events")
-    
-    print("Reflecting on memories...")
-    reflection = await memory_store.reflect(
-        bank_name=bank_name,
-        customer_id="cust_123",
-        query="What is the payment pattern?",
-    )
-    print(f"Playbook: {reflection.get('playbook', 'N/A')[:100]}...")
-    
-    print("Testing outbox...")
-    event = await queue_memory_event(
-        bank_name=bank_name,
-        content="Outbox test",
-        timestamp=datetime.now(),
-    )
-    print(f"Queued event: {event.id}")
-    
-    await outbox_processor.process_outbox()
-    print("Outbox processed")
-    
-    print("Integration tests completed!")
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.run(run_all_integration_tests())
+    client = get_hindsight_client()
+    try:
+        monkeypatch.setattr(outbox, "get_session", test_session)
+        await outbox.OutboxProcessor().process_outbox()
+        with Session(engine) as session:
+            event = session.exec(
+                select(MemoryEvent).where(MemoryEvent.id == event_id)
+            ).one()
+            assert event.retained_at is not None
+            assert event.document_id == event_id
+    finally:
+        await client.aclose()
+        engine.dispose()

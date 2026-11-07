@@ -20,6 +20,7 @@ from munshi.db.models import (
     RiskAlertStatus,
 )
 from munshi.memory import queries as memory_queries
+from munshi.memory.client import HindsightUnavailable
 
 logger = logging.getLogger(__name__)
 _DISTRESS_TERMS = (
@@ -147,17 +148,21 @@ class RiskAgent(BasePolicy):
         if not store.is_available:
             logger.warning("Risk memory unavailable for customer %s", customer.id)
             return {}, []
-        findings = await memory_queries.get_memory_for_risk(
-            bank_name=customer.business.bank_id,
-            customer_id=str(customer.id),
-        )
-        observations = await store.recall(
-            bank_name=customer.business.bank_id,
-            customer_id=str(customer.id),
-            kind="observation",
-            query="Payment timing, promises, customer distress, and changes in behaviour",
-            k=20,
-        )
+        try:
+            findings = await memory_queries.get_memory_for_risk(
+                bank_name=customer.business.bank_id,
+                customer_id=str(customer.id),
+            )
+            observations = await store.recall(
+                bank_name=customer.business.bank_id,
+                customer_id=str(customer.id),
+                kind="observation",
+                query="Payment timing, promises, customer distress, and changes in behaviour",
+                k=20,
+            )
+        except HindsightUnavailable:
+            logger.warning("Risk memory service unavailable for customer %s", customer.id)
+            return {}, []
         return findings, [
             item for item in observations if _belongs_to_customer(item, customer.id)
         ]

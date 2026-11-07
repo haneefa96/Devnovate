@@ -41,3 +41,4 @@ line-length = 100
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-v"
+markers = ["integration: tests requiring a configured external service"]

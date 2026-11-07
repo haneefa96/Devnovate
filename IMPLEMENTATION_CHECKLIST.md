@@ -17,6 +17,10 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 - [x] Frontend production build: passed.
 - [x] Groq credentials load in backend settings; minimal live request succeeded with `openai/gpt-oss-120b`.
 - [x] Direct Hindsight Cloud synthetic bank/retain/recall was previously verified with SDK 1.2.0 in a separate verification environment.
+- [x] Installed `hindsight-client==1.2.0` in the active backend Python 3.11.9 environment and verified the installed `Hindsight` async API.
+- [x] Repaired Munshi's existing Hindsight adapter; live synthetic Cloud tests verified bank access, retain, recall, reflect, timestamp/metadata handling, customer tags, and business isolation.
+- [x] Connected the persisted memory outbox to FastAPI lifespan; mocked/local tests cover confirmed-success status, retry bounds, duplicate prevention, failure handling, and worker shutdown.
+- [x] Hindsight outages now surface explicitly; readiness marks memory pending and Collector/Risk continue from ledger evidence instead of treating errors as empty memory.
 - [x] `backend/.env` is ignored; templates contain empty secret placeholders; no frontend `.env` file was found.
 - [x] Keep local SQLite for this stage; no Supabase configuration or migration.
 
@@ -26,20 +30,20 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 - [ ] Customer page reads ledger history but returns no learned playbook or beliefs.
 - [ ] Invoice/readiness form lacks invoice GSTIN and PO amount.
 - [ ] Readiness R3/R6 cannot be fully exercised through normal API input; GSTIN validation is not registry verification.
-- [ ] Learned requirements invoke an incompatible Hindsight adapter; IRN has no modeled field/document type.
+- [ ] `EINVOICE_IRN` has no corresponding document/IRN field.
 - [ ] Owner approval persists but marks the action SENT without actual delivery.
 - [ ] WhatsApp support generates a prefilled link only; no automatic sending or simulator delivery.
 - [ ] Action explanations and plain-language explain return generic/empty evidence.
 - [ ] Simulation HTTP tick/inject are not connected to the deterministic world.
 - [ ] Evaluation runner exists but there are no stored `sim_run` results.
 - [ ] Backend test suite has 6 failures; details are in the audit.
+- [x] Prompt 2 focused Hindsight/agent/readiness run: 58 passed, 1 pre-existing parser-title failure, 2 default-mode live integration skips; separate opt-in live Cloud run: 2 passed.
+- [x] Full backend regression run: 306 passed, 6 known baseline failures, 2 skipped; failures are the five Groq mock-patching failures and parser-title mismatch.
 - [ ] Frontend lint fails because ESLint configuration is missing.
 - [ ] Dockerfile refers to absent `uv.lock`; Docker was unavailable for a build check.
 
 ## Needs implementation
 
-- [ ] Make Hindsight application calls use the actual SDK API and propagate unavailable/error state honestly.
-- [ ] Reconcile and idempotently process memory outbox events; respect retry times and wire startup/shutdown.
 - [ ] Wire daily Collector/Risk behavior to backend events while preserving customer isolation and owner approval.
 - [ ] Persist and return evidence for drafts, alerts, and explanations.
 - [ ] Separate approval, handoff, and confirmed delivery states.
@@ -56,7 +60,6 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 - [x] `GROQ_API_KEY` and Hindsight Cloud settings are present in ignored `backend/.env`.
 - [ ] Rotate the Groq key if the earlier local test output is accessible to anyone else.
 - [ ] Select an available Groq customer model; `qwen/qwen3-32b` was absent from the model list returned in this audit.
-- [ ] Install the Hindsight SDK in the actual backend environment; the earlier attempt and two bounded Prompt 2 attempts stalled without output. PyPI and its package-file host responded with HTTP 200, no pip index override was found, and the exact pip stall cause remains unknown.
 - [ ] Resolve official Band SDK package-index dependency failure.
 - [ ] Register Collector and Risk remote agents and configure separate agent IDs/keys plus the shared room ID.
 - [ ] Decide whether local Hindsight Docker is needed; Docker is unavailable in this environment.
@@ -64,9 +67,6 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 ## Needs testing
 
 - [ ] Resolve five Groq mock-patching failures and the playbook parser title mismatch.
-- [ ] Re-run the focused Prompt 2 tests after resolving SDK installation: the current run had 56 passed, one unrelated playbook-title assertion failure, and five Hindsight integration tests skipped unconditionally.
-- [ ] Test Hindsight wrapper operations and customer isolation against Cloud with synthetic data.
-- [ ] Test outbox success, retry schedule, idempotency, and FastAPI lifecycle.
 - [ ] Test Band SDK compatibility, real room posting, inbound commands, and web/Band approval parity.
 - [ ] Test Groq structured output, retries, rate limits, and selected customer model.
 - [ ] Run frontend tests against the live API rather than mocked `fetch`.

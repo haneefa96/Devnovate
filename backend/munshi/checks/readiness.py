@@ -255,15 +255,22 @@ async def check_readiness(
             memory_pending = True
             logger.warning("Readiness memory unavailable for customer %s", customer.id)
         else:
-            memory_findings = await queries.get_memory_for_readiness(
-                bank_name=business.bank_id,
-                customer_id=str(customer.id),
-            )
-            if memory_pending is None:
-                memory_pending = not any(
-                    memory_findings.get(key)
-                    for key in ("requirements", "conflicts", "playbook")
+            from munshi.memory.client import HindsightUnavailable
+
+            try:
+                memory_findings = await queries.get_memory_for_readiness(
+                    bank_name=business.bank_id,
+                    customer_id=str(customer.id),
                 )
+                if memory_pending is None:
+                    memory_pending = not any(
+                        memory_findings.get(key)
+                        for key in ("requirements", "conflicts", "playbook")
+                    )
+            except HindsightUnavailable:
+                memory_findings = {}
+                memory_pending = True
+                logger.warning("Readiness memory service unavailable for customer %s", customer.id)
 
     return combine_readiness(
         rule_results,

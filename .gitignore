@@ -71,3 +71,6 @@ htmlcov/
 # Build artifacts
 *.build
 *.pyc
+/hindsight-install-log.txt
+/pytest-of-*/
+/uploads/

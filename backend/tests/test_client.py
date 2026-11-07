@@ -1,402 +1,226 @@
-"""
-Munshi - Test Hindsight client
-"""
+"""Focused tests for Munshi's adapter to hindsight-client 1.x."""
+
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 
 
-class TestHindsightClient:
-    """Test HindsightClient class."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    def test_client_singleton(self):
-        """Test that client is a singleton."""
-        from munshi.memory.client import get_hindsight_client, HindsightClient
-        
-        client1 = get_hindsight_client()
-        client2 = get_hindsight_client()
-        
-        assert client1 is client2
-        assert isinstance(client1, HindsightClient)
-    
-    def test_client_not_available_when_not_configured(self):
-        """Test client is not available when not configured."""
-        from munshi.memory.client import get_hindsight_client
-        
-        client = get_hindsight_client()
-        
-        # Hindsight should not be available without configuration
-        assert client.is_available is False
-    
-    def test_client_raises_when_not_initialized(self):
-        """Test client raises when not initialized."""
-        from munshi.memory.client import HindsightClient
-        
-        client = HindsightClient()
-        
-        # Should raise RuntimeError when not initialized
-        with pytest.raises(RuntimeError):
-            _ = client.client
-    
-    @pytest.mark.asyncio
-    async def test_client_aclose(self):
-        """Test async client close."""
-        from munshi.memory.client import HindsightClient
-        
-        client = HindsightClient()
-        
-        # Should not raise even if client not initialized
-        await client.aclose()
-    
-    def test_client_close(self):
-        """Test sync client close."""
-        from munshi.memory.client import HindsightClient
-        
-        client = HindsightClient()
-        
-        # Should not raise even if client not initialized
-        client.close()
+@pytest.fixture(autouse=True)
+def reset_singleton():
+    from munshi.memory import client as client_module
+
+    client_module.HindsightClient._instance = None
+    yield
+    client_module.HindsightClient._instance = None
 
 
-class TestIsHindsightAvailable:
-    """Test is_hindsight_available function."""
-    
-    def test_is_not_available_without_config(self):
-        """Test that Hindsight is not available without config."""
-        from munshi.memory.client import is_hindsight_available
-        
-        result = is_hindsight_available()
-        
-        assert result is False
+def _client_with_sdk(sdk):
+    wrapper = MagicMock()
+    wrapper.is_available = True
+    wrapper.client = sdk
+    return wrapper
 
 
-class TestCreateBank:
-    """Test create_bank function."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    @pytest.mark.asyncio
-    async def test_create_bank_hindsight_unavailable(self):
-        """Test create_bank when Hindsight is unavailable."""
-        from munshi.memory.client import create_bank
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = False
-            mock_get_client.return_value = mock_client
-            
-            result = await create_bank(bank_id="test-bank")
-            
-            assert result is None
-    
-    @pytest.mark.asyncio
-    async def test_create_bank_success(self):
-        """Test create_bank success."""
-        from munshi.memory.client import create_bank
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.create_bank = AsyncMock(
-                return_value={"bank_id": "test-bank", "name": "Test Bank"}
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await create_bank(
-                bank_id="test-bank",
-                name="Test Bank",
-            )
-            
-            assert result is not None
-            assert result["bank_id"] == "test-bank"
-    
-    @pytest.mark.asyncio
-    async def test_create_bank_error(self):
-        """Test create_bank error handling."""
-        from munshi.memory.client import create_bank
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.create_bank = AsyncMock(
-                side_effect=Exception("Connection error")
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await create_bank(bank_id="test-bank")
-            
-            assert result is None
+def test_client_initializes_official_sdk_with_configured_values(monkeypatch):
+    from munshi.memory import client as client_module
+
+    captured = {}
+
+    class FakeHindsight:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(client_module.settings, "HINDSIGHT_LOCAL_URL", None)
+    monkeypatch.setattr(client_module.settings, "HINDSIGHT_BASE_URL", "https://memory.example")
+    monkeypatch.setattr(client_module.settings, "HINDSIGHT_API_KEY", "synthetic-key")
+    monkeypatch.setattr(client_module.settings, "HINDSIGHT_TIMEOUT", 12)
+    monkeypatch.setitem(
+        __import__("sys").modules,
+        "hindsight_client",
+        SimpleNamespace(Hindsight=FakeHindsight),
+    )
+
+    client = client_module.HindsightClient()
+
+    assert client.is_available
+    assert captured == {
+        "base_url": "https://memory.example",
+        "api_key": "synthetic-key",
+        "timeout": 12.0,
+    }
 
 
-class TestRetainEvent:
-    """Test retain_event function."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    @pytest.mark.asyncio
-    async def test_retain_event_hindsight_unavailable(self):
-        """Test retain_event when Hindsight is unavailable."""
-        from munshi.memory.client import retain_event
-        from datetime import datetime
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = False
-            mock_get_client.return_value = mock_client
-            
-            result = await retain_event(
-                bank_id="test-bank",
-                content="Test content",
-                timestamp=datetime.now(),
-            )
-            
-            assert result is None
-    
-    @pytest.mark.asyncio
-    async def test_retain_event_success(self):
-        """Test retain_event success."""
-        from munshi.memory.client import retain_event
-        from datetime import datetime
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.retain = AsyncMock(
-                return_value={"document_id": "doc_123"}
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await retain_event(
-                bank_id="test-bank",
-                content="Test content",
-                timestamp=datetime.now(),
-            )
-            
-            assert result is not None
-            assert result["document_id"] == "doc_123"
+def test_unconfigured_client_raises_explicit_error():
+    from munshi.memory.client import HindsightClient, HindsightUnavailable
+
+    client = HindsightClient()
+    with pytest.raises(HindsightUnavailable, match="not configured"):
+        _ = client.client
 
 
-class TestRecallMemories:
-    """Test recall_memories function."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    @pytest.mark.asyncio
-    async def test_recall_memories_hindsight_unavailable(self):
-        """Test recall_memories when Hindsight is unavailable."""
-        from munshi.memory.client import recall_memories
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = False
-            mock_get_client.return_value = mock_client
-            
-            result = await recall_memories(bank_id="test-bank", query="test")
-            
-            assert result == []
-    
-    @pytest.mark.asyncio
-    async def test_recall_memories_success(self):
-        """Test recall_memories success."""
-        from munshi.memory.client import recall_memories
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.recall = AsyncMock(
-                return_value=[
-                    {"document_id": "doc_1", "content": "Event 1"},
-                    {"document_id": "doc_2", "content": "Event 2"},
-                ]
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await recall_memories(bank_id="test-bank", query="test")
-            
-            assert len(result) == 2
-            assert result[0]["document_id"] == "doc_1"
+@pytest.mark.asyncio
+async def test_health_check_uses_async_version_method():
+    from munshi.memory.client import HindsightClient
+
+    wrapper = HindsightClient()
+    wrapper._client = MagicMock()
+    wrapper._client.aget_version = AsyncMock(return_value=SimpleNamespace(api_version="1.1.0"))
+
+    assert await wrapper.check_available() is True
+    wrapper._client.aget_version.assert_awaited_once_with()
 
 
-class TestReflectOnMemories:
-    """Test reflect_on_memories function."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    @pytest.mark.asyncio
-    async def test_reflect_memories_hindsight_unavailable(self):
-        """Test reflect_memories when Hindsight is unavailable."""
-        from munshi.memory.client import reflect_on_memories
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = False
-            mock_get_client.return_value = mock_client
-            
-            result = await reflect_on_memories(bank_id="test-bank", query="test")
-            
-            assert result == {"requirements": [], "conflicts": [], "playbook": ""}
-    
-    @pytest.mark.asyncio
-    async def test_reflect_memories_success(self):
-        """Test reflect_memories success."""
-        from munshi.memory.client import reflect_on_memories
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.reflect = AsyncMock(
-                return_value={
-                    "requirements": [{"code": "req_1", "description": "Test req"}],
-                    "conflicts": [],
-                    "playbook": "Playbook text",
-                }
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await reflect_on_memories(bank_id="test-bank", query="test")
-            
-            assert "requirements" in result
-            assert len(result["requirements"]) == 1
-            assert result["playbook"] == "Playbook text"
+@pytest.mark.asyncio
+async def test_retain_passes_timestamp_tags_metadata_and_stable_document_id():
+    from munshi.memory.client import retain_event
+
+    timestamp = datetime(2026, 11, 7, 10, tzinfo=timezone.utc)
+    sdk = MagicMock()
+    sdk.aretain = AsyncMock(return_value=SimpleNamespace(success=True, model_dump=lambda **_: {
+        "success": True,
+        "bank_id": "munshi-demo",
+        "items_count": 1,
+    }))
+    with patch(
+        "munshi.memory.client.get_hindsight_client",
+        return_value=_client_with_sdk(sdk),
+    ):
+        response = await retain_event(
+            bank_id="munshi-demo",
+            content="Synthetic payment preference fact",
+            timestamp=timestamp,
+            metadata={"customer_id": "cust-test", "source": "synthetic"},
+            tags=["customer:cust-test", "kind:observation"],
+            document_id="evt_test_1",
+        )
+
+    assert response["success"] is True
+    assert response["document_id"] == "evt_test_1"
+    kwargs = sdk.aretain.await_args.kwargs
+    assert kwargs["timestamp"] == timestamp
+    assert kwargs["document_id"] == "evt_test_1"
+    assert kwargs["tags"] == ["customer:cust-test", "kind:observation"]
+    assert kwargs["metadata"] == {"customer_id": "cust-test", "source": "synthetic"}
 
 
-class TestListBankMemories:
-    """Test list_bank_memories function."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    @pytest.mark.asyncio
-    async def test_list_memories_hindsight_unavailable(self):
-        """Test list_memories when Hindsight is unavailable."""
-        from munshi.memory.client import list_bank_memories
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = False
-            mock_get_client.return_value = mock_client
-            
-            result = await list_bank_memories(bank_id="test-bank")
-            
-            assert result == []
-    
-    @pytest.mark.asyncio
-    async def test_list_memories_success(self):
-        """Test list_memories success."""
-        from munshi.memory.client import list_bank_memories
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.list_memories = AsyncMock(
-                return_value=[
-                    {"document_id": "doc_1", "content": "Event 1"},
-                ]
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await list_bank_memories(bank_id="test-bank")
-            
-            assert len(result) == 1
-            assert result[0]["document_id"] == "doc_1"
+@pytest.mark.asyncio
+async def test_retain_failure_is_explicit_and_does_not_expose_sdk_error():
+    from munshi.memory.client import HindsightUnavailable, retain_event
+
+    sdk = MagicMock()
+    sdk.aretain = AsyncMock(side_effect=RuntimeError("secret response details"))
+    with patch(
+        "munshi.memory.client.get_hindsight_client",
+        return_value=_client_with_sdk(sdk),
+    ):
+        with pytest.raises(HindsightUnavailable) as exc_info:
+            await retain_event("munshi-demo", "synthetic fact")
+
+    assert "secret response details" not in str(exc_info.value)
 
 
-class TestMentalModels:
-    """Test mental model operations."""
-    
-    @pytest.fixture(autouse=True)
-    def reset_singleton(self):
-        """Reset singleton between tests."""
-        from munshi.memory import client as client_module
-        client_module.HindsightClient._instance = None
-        yield
-        client_module.HindsightClient._instance = None
-    
-    @pytest.mark.asyncio
-    async def test_create_mental_model_unavailable(self):
-        """Test create_mental_model when Hindsight is unavailable."""
-        from munshi.memory.client import create_mental_model
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = False
-            mock_get_client.return_value = mock_client
-            
-            result = await create_mental_model(
-                bank_id="test-bank",
-                name="Test Model",
-                source_query="test",
-            )
-            
-            assert result is None
-    
-    @pytest.mark.asyncio
-    async def test_list_mental_models_success(self):
-        """Test list_mental_models success."""
-        from munshi.memory.client import list_mental_models
-        
-        with patch('munshi.memory.client.get_hindsight_client') as mock_get_client:
-            mock_client = MagicMock()
-            mock_client.is_available = True
-            mock_hindsight = AsyncMock()
-            mock_hindsight.list_mental_models = AsyncMock(
-                return_value=[
-                    {"id": "model_1", "name": "Test Model"},
-                ]
-            )
-            mock_client.client = mock_hindsight
-            mock_get_client.return_value = mock_client
-            
-            result = await list_mental_models(bank_id="test-bank")
-            
-            assert len(result) == 1
-            assert result[0]["name"] == "Test Model"
+@pytest.mark.asyncio
+async def test_recall_uses_customer_tag_filter_and_maps_sdk_results():
+    from munshi.memory.client import recall_memories
+
+    result = SimpleNamespace(
+        id="memory-1",
+        document_id="evt-1",
+        text="Synthetic fact",
+        type="experience",
+        occurred_start="2026-11-07T10:00:00Z",
+        tags=["customer:cust-a"],
+        metadata={"customer_id": "cust-a"},
+        model_dump=lambda **_: {
+            "id": "memory-1",
+            "document_id": "evt-1",
+            "text": "Synthetic fact",
+            "type": "experience",
+            "occurred_start": "2026-11-07T10:00:00Z",
+            "tags": ["customer:cust-a"],
+            "metadata": {"customer_id": "cust-a"},
+        },
+    )
+    sdk = MagicMock()
+    sdk.arecall = AsyncMock(return_value=SimpleNamespace(results=[result]))
+    with patch(
+        "munshi.memory.client.get_hindsight_client",
+        return_value=_client_with_sdk(sdk),
+    ):
+        memories = await recall_memories(
+            "munshi-demo",
+            "payment preference",
+            tags=["customer:cust-a"],
+            tags_match="all",
+        )
+
+    assert memories[0]["content"] == "Synthetic fact"
+    assert memories[0]["document_id"] == "evt-1"
+    assert memories[0]["customer_id"] == "cust-a"
+    assert sdk.arecall.await_args.kwargs["tags"] == ["customer:cust-a"]
+    assert sdk.arecall.await_args.kwargs["tags_match"] == "all"
+    assert sdk.arecall.await_args.kwargs["budget"] == "mid"
+
+
+@pytest.mark.asyncio
+async def test_reflect_uses_supported_schema_and_customer_tag():
+    from munshi.memory.client import reflect_on_memories
+
+    structured = {"requirements": [], "conflicts": [], "playbook": "Synthetic"}
+    sdk = MagicMock()
+    sdk.areflect = AsyncMock(return_value=SimpleNamespace(structured_output=structured))
+    with patch(
+        "munshi.memory.client.get_hindsight_client",
+        return_value=_client_with_sdk(sdk),
+    ):
+        response = await reflect_on_memories(
+            "munshi-demo",
+            "synthetic query",
+            tags=["customer:cust-a"],
+            tags_match="all",
+        )
+
+    assert response == structured
+    assert sdk.areflect.await_args.kwargs["response_schema"]["required"] == [
+        "requirements",
+        "conflicts",
+        "playbook",
+    ]
+    assert sdk.areflect.await_args.kwargs["tags"] == ["customer:cust-a"]
+
+
+@pytest.mark.asyncio
+async def test_create_bank_uses_sdk_async_api():
+    from munshi.memory.client import create_bank
+
+    sdk = MagicMock()
+    sdk.acreate_bank = AsyncMock(
+        return_value=SimpleNamespace(model_dump=lambda **_: {"bank_id": "munshi-demo"})
+    )
+    with patch(
+        "munshi.memory.client.get_hindsight_client",
+        return_value=_client_with_sdk(sdk),
+    ):
+        response = await create_bank(
+            "munshi-demo",
+            name="Demo supplier",
+            mission="Synthetic mission",
+            background="Synthetic background",
+        )
+
+    assert response["bank_id"] == "munshi-demo"
+    sdk.acreate_bank.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_client_close_resets_singleton_for_next_application_lifespan():
+    from munshi.memory.client import HindsightClient
+
+    client = HindsightClient()
+    client._client = MagicMock()
+    client._client.aclose = AsyncMock()
+    await client.aclose()
+
+    assert HindsightClient._instance is None

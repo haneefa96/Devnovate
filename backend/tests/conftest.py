@@ -1,7 +1,8 @@
 import os
 
 
-for name in (
+if os.getenv("MUNSHI_RUN_HINDSIGHT_INTEGRATION") != "1":
+    for name in (
     "GROQ_API_KEY",
     "HINDSIGHT_API_KEY",
     "HINDSIGHT_BASE_URL",
@@ -13,5 +14,5 @@ for name in (
     "BAND_COLLECTOR_API_KEY",
     "BAND_RISK_AGENT_ID",
     "BAND_RISK_API_KEY",
-):
-    os.environ[name] = ""
+    ):
+        os.environ[name] = ""

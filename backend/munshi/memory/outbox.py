@@ -1,186 +1,242 @@
-"""
-Munshi - Memory outbox
-
-This module handles retry mechanism for failed Hindsight retains.
-"""
+"""Retryable outbox for asynchronously retaining eligible memory events."""
 
 import asyncio
+import hashlib
 import logging
 import os
-from datetime import datetime
-from typing import List, Optional, Dict, Any
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any
 
+from sqlalchemy import or_
 from sqlmodel import Session, select
 
+from munshi.db.models import Business, Customer, MemoryEvent
 from munshi.db.session import get_session
-from munshi.db.models import MemoryEvent
 
 logger = logging.getLogger(__name__)
 
+_PHONE_RE = re.compile(
+    r"(?<!\d)(?:\+?91[\s().-]*)?(?:0[\s().-]*)?[6-9](?:[\s().-]*\d){9}(?!\d)"
+)
+_ACCOUNT_RE = re.compile(
+    r"(?i)\b(?:bank\s+)?(?:account|a/c)\s*(?:no\.?|number)?\s*[:#-]?\s*\d{6,18}\b"
+)
+_IFSC_RE = re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b", re.IGNORECASE)
+_UPI_RE = re.compile(
+    r"(?i)\b(?:upi(?:\s+id)?|vpa)\s*[:=-]\s*[a-z0-9._-]+@[a-z0-9.-]+\b"
+)
+_DRAFT_KINDS = {"draft", "action_draft", "reminder_draft", "unsent_draft"}
+
+
+def _session() -> Session:
+    return next(get_session())
+
+
+def _utc_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _safe_content(event: MemoryEvent) -> str | None:
+    if (event.kind or event.event_type or "").lower() in _DRAFT_KINDS:
+        return None
+    content = event.content or ""
+    content = _PHONE_RE.sub("[phone redacted]", content)
+    content = _ACCOUNT_RE.sub("[account number redacted]", content)
+    content = _IFSC_RE.sub("[bank code redacted]", content)
+    content = _UPI_RE.sub("[payment identifier redacted]", content)
+    return content.strip() or None
+
+
+def _event_hash(
+    bank_name: str,
+    content: str,
+    timestamp: datetime,
+    customer_id: int | None,
+    invoice_id: int | None,
+    event_type: str | None,
+) -> str:
+    identity = "\0".join(
+        (
+            bank_name,
+            content,
+            timestamp.isoformat(),
+            str(customer_id or ""),
+            str(invoice_id or ""),
+            event_type or "",
+        )
+    )
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
 
 class OutboxProcessor:
-    """
-    Process outbox for failed Hindsight retains.
-    
-    Memory events with retained_at = NULL are retried periodically.
-    Failed events are retried up to MAX_RETRIES before being marked as permanently failed.
-    """
-    
-    def __init__(self):
+    """Single-process, bounded retry worker for pending memory events."""
+
+    def __init__(self) -> None:
         self._running = False
         self._interval_seconds = int(os.getenv("OUTBOX_INTERVAL", "60"))
         self._max_retries = int(os.getenv("OUTBOX_MAX_RETRIES", "5"))
         self._retry_delay_seconds = int(os.getenv("OUTBOX_RETRY_DELAY", "300"))
-    
+        self._process_lock = asyncio.Lock()
+
     async def start(self) -> None:
-        """Start outbox processor."""
+        if self._running:
+            logger.info("Memory outbox worker is already running")
+            return
         self._running = True
-        logger.info("Memory outbox processor started")
-        while self._running:
-            await self.process_outbox()
-            await asyncio.sleep(self._interval_seconds)
-    
-    async def stop(self) -> None:
-        """Stop outbox processor."""
-        self._running = False
-        logger.info("Memory outbox processor stopped")
-    
-    async def process_outbox(self) -> None:
-        """Process pending memory events."""
-        session = next(get_session())
+        logger.info("Memory outbox worker started")
         try:
-            # Get events that haven't been retained (or failed)
-            statement = select(MemoryEvent).where(
-                MemoryEvent.retained_at == None,
-                MemoryEvent.failed_at == None
-            ).order_by(MemoryEvent.created_at)
-            
-            results = session.exec(statement)
-            pending_events = results.all()
-            
-            for event in pending_events:
-                await self._attempt_retain(event, session)
-        
-        except Exception as e:
-            logger.error(f"Error processing outbox: {e}")
+            while self._running:
+                await self.process_outbox()
+                await asyncio.sleep(self._interval_seconds)
         finally:
-            session.close()
-    
+            self._running = False
+            logger.info("Memory outbox worker stopped")
+
+    async def stop(self) -> None:
+        self._running = False
+
+    async def process_outbox(self) -> None:
+        if self._process_lock.locked():
+            return
+        async with self._process_lock:
+            session = _session()
+            try:
+                now = datetime.now(timezone.utc)
+                statement = (
+                    select(MemoryEvent)
+                    .where(
+                        MemoryEvent.retained_at.is_(None),
+                        MemoryEvent.failed_at.is_(None),
+                        or_(
+                            MemoryEvent.next_retry_at.is_(None),
+                            MemoryEvent.next_retry_at <= now,
+                        ),
+                    )
+                    .order_by(MemoryEvent.created_at)
+                )
+                for event in session.exec(statement).all():
+                    await self._attempt_retain(event, session)
+            except Exception as exc:
+                logger.error("Memory outbox pass failed (%s)", type(exc).__name__)
+                session.rollback()
+            finally:
+                session.close()
+
     async def _attempt_retain(self, event: MemoryEvent, session: Session) -> None:
-        """
-        Attempt to retain a single event.
-        
-        Args:
-            event: MemoryEvent to retain
-            session: Database session
-        """
-        try:
-            # Check if Hindsight is available
-            from munshi.memory.client import is_hindsight_available
-            
-            if not is_hindsight_available():
-                logger.warning("Hindsight unavailable, skipping retain")
-                return
-            
-            # Attempt to retain
-            from munshi.memory.client import retain_event
-            from munshi.memory.events import format_event_content, generate_event_tags
-            
-            bank_name = event.bank_name
-            timestamp = event.timestamp
-            content = event.content or format_event_content(event.event_type, event.details or {})
-            tags = generate_event_tags(
-                customer_id=event.customer_id,
-                event_kind=event.event_type or "action",
-                invoice_id=event.invoice_id,
+        from munshi.memory.client import HindsightUnavailable, is_hindsight_available, retain_event
+        from munshi.memory.events import generate_event_tags
+
+        if not is_hindsight_available():
+            return
+
+        content = _safe_content(event)
+        if content is None:
+            event.failed_at = datetime.now(timezone.utc)
+            session.add(event)
+            session.commit()
+            logger.warning("Skipped ineligible memory event %s", event.id)
+            return
+
+        metadata = event.metadata_ or {}
+        customer_id = metadata.get("customer_id") or event.customer_id
+        invoice_id = metadata.get("invoice_id") or event.invoice_id
+        bank_name = event.bank_name
+        if not bank_name and event.customer_id is not None:
+            customer = session.get(Customer, event.customer_id)
+            business = (
+                session.get(Business, customer.business_id)
+                if customer is not None
+                else None
             )
-            
+            bank_name = business.bank_id if business is not None else None
+        if not bank_name:
+            self._increment_retry(event, session)
+            logger.warning("Memory event %s has no supplier memory bank", event.id)
+            return
+        event_kind = event.event_type or event.kind or "action"
+        tags = generate_event_tags(
+            customer_id=str(customer_id) if customer_id is not None else None,
+            event_kind=event_kind,
+            invoice_id=str(invoice_id) if invoice_id is not None else None,
+        )
+        occurred_at = event.timestamp or datetime.combine(
+            event.occurred_on,
+            datetime.min.time(),
+            tzinfo=timezone.utc,
+        )
+        safe_metadata = {
+            "event_type": event_kind,
+            "customer_id": str(customer_id) if customer_id is not None else "",
+            "invoice_id": str(invoice_id) if invoice_id is not None else "",
+        }
+
+        try:
+            from munshi.memory.queries import memory_store
+
+            await memory_store._ensure_bank(bank_name)
             response = await retain_event(
                 bank_id=bank_name,
                 content=content,
                 context=event.context,
-                metadata=event.metadata or {},
-                timestamp=timestamp,
+                metadata=safe_metadata,
+                timestamp=occurred_at,
+                tags=tags,
+                document_id=event.id,
             )
-            
-            if response:
-                # Success
-                event.retained_at = datetime.now()
-                event.document_id = response.get("document_id")
-                event.retry_count = 0
-                session.commit()
-                session.refresh(event)
-                logger.info(f"Retained memory event: {event.id}")
-            else:
-                # Retain returned None (Hindsight unavailable)
-                self._increment_retry(event, session)
-        
-        except Exception as e:
-            logger.error(f"Error retaining event {event.id}: {e}")
+            if not response or response.get("success") is not True:
+                raise HindsightUnavailable("Hindsight did not confirm retention")
+            event.retained_at = datetime.now(timezone.utc)
+            event.document_id = event.id
+            event.next_retry_at = None
+            event.failed_at = None
+            session.add(event)
+            session.commit()
+        except Exception as exc:
+            logger.warning(
+                "Memory event %s retain failed (%s)",
+                event.id,
+                type(exc).__name__,
+            )
             self._increment_retry(event, session)
-    
+
     def _increment_retry(self, event: MemoryEvent, session: Session) -> None:
-        """
-        Increment retry count and check if permanently failed.
-        
-        Args:
-            event: MemoryEvent
-            session: Database session
-        """
         event.retry_count = (event.retry_count or 0) + 1
-        
         if event.retry_count >= self._max_retries:
-            event.failed_at = datetime.now()
-            logger.error(
-                f"Memory event {event.id} failed after {event.retry_count} retries"
-            )
+            event.failed_at = datetime.now(timezone.utc)
+            event.next_retry_at = None
+            logger.error("Memory event %s exhausted bounded retries", event.id)
         else:
-            # Schedule retry with exponential backoff
-            next_retry = datetime.now().timestamp() + (
-                self._retry_delay_seconds * (2 ** (event.retry_count - 1))
-            )
-            event.next_retry_at = datetime.fromtimestamp(next_retry)
-        
+            delay = self._retry_delay_seconds * (2 ** (event.retry_count - 1))
+            event.next_retry_at = datetime.now(timezone.utc) + timedelta(seconds=delay)
+        session.add(event)
         session.commit()
-        session.refresh(event)
-    
+
     async def get_pending_count(self) -> int:
-        """
-        Get count of pending events in outbox.
-        
-        Returns:
-            Number of pending events
-        """
-        session = next(get_session())
+        session = _session()
         try:
             statement = select(MemoryEvent).where(
-                MemoryEvent.retained_at == None,
-                MemoryEvent.failed_at == None
+                MemoryEvent.retained_at.is_(None),
+                MemoryEvent.failed_at.is_(None),
             )
-            results = session.exec(statement)
-            return len(results.all())
+            return len(session.exec(statement).all())
         finally:
             session.close()
-    
+
     async def get_failed_count(self) -> int:
-        """
-        Get count of permanently failed events.
-        
-        Returns:
-            Number of failed events
-        """
-        session = next(get_session())
+        session = _session()
         try:
-            statement = select(MemoryEvent).where(
-                MemoryEvent.failed_at != None
+            return len(
+                session.exec(
+                    select(MemoryEvent).where(MemoryEvent.failed_at.is_not(None))
+                ).all()
             )
-            results = session.exec(statement)
-            return len(results.all())
         finally:
             session.close()
 
 
-# Global outbox processor instance
 outbox_processor = OutboxProcessor()
 
 
@@ -188,135 +244,109 @@ async def queue_memory_event(
     bank_name: str,
     content: str,
     timestamp: datetime,
-    customer_id: Optional[str] = None,
-    invoice_id: Optional[str] = None,
-    event_type: str = None,
-    context: str = None,
-    details: Dict[str, Any] = None,
-    metadata: Dict[str, Any] = None,
+    customer_id: int | str | None = None,
+    invoice_id: int | str | None = None,
+    event_type: str | None = None,
+    context: str | None = None,
+    details: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> MemoryEvent:
-    """
-    Queue a memory event for retention.
-    
-    Args:
-        bank_name: Bank name
-        content: Event content
-        timestamp: Event timestamp
-        customer_id: Customer ID (optional)
-        invoice_id: Invoice ID (optional)
-        event_type: Type of event
-        context: Context string
-        details: Event details
-        metadata: Additional metadata
-    
-    Returns:
-        Created MemoryEvent
-    """
-    session = next(get_session())
+    session = _session()
     try:
-        from munshi.db.models import MemoryEvent
-        
+        customer_fk = int(customer_id) if str(customer_id or "").isdigit() else None
+        invoice_fk = int(invoice_id) if str(invoice_id or "").isdigit() else None
+        event_hash = _event_hash(
+            bank_name,
+            content,
+            timestamp,
+            customer_fk,
+            invoice_fk,
+            event_type,
+        )
+        existing = session.exec(
+            select(MemoryEvent).where(MemoryEvent.content_hash == event_hash)
+        ).first()
+        if existing:
+            return existing
+
+        event_metadata = dict(metadata or {})
+        if customer_id is not None:
+            event_metadata["customer_id"] = str(customer_id)
+        if invoice_id is not None:
+            event_metadata["invoice_id"] = str(invoice_id)
         event = MemoryEvent(
             bank_name=bank_name,
             content=content,
-            timestamp=timestamp,
-            customer_id=customer_id,
-            invoice_id=invoice_id,
+            timestamp=_utc_datetime(timestamp),
+            customer_id=customer_fk,
+            invoice_id=invoice_fk,
+            kind=event_type or "action",
             event_type=event_type,
             context=context,
             details=details,
-            metadata=metadata,
-            retained_at=None,
-            failed_at=None,
-            retry_count=0,
+            metadata_=event_metadata,
+            content_hash=event_hash,
         )
-        
         session.add(event)
         session.commit()
         session.refresh(event)
-        logger.info(f"Queued memory event: {event.id}")
+        logger.info("Queued memory event %s", event.id)
         return event
+    except Exception:
+        session.rollback()
+        raise
     finally:
         session.close()
 
 
-async def mark_event_as_retained(event_id: int, document_id: str) -> bool:
-    """
-    Mark an event as successfully retained.
-    
-    Args:
-        event_id: MemoryEvent ID
-        document_id: Hindsight document ID
-    
-    Returns:
-        True if successful
-    """
-    session = next(get_session())
+async def mark_event_as_retained(event_id: str, document_id: str) -> bool:
+    session = _session()
     try:
-        statement = select(MemoryEvent).where(MemoryEvent.id == event_id)
-        result = session.exec(statement).first()
-        
-        if not result:
+        event = session.exec(
+            select(MemoryEvent).where(MemoryEvent.id == event_id)
+        ).first()
+        if event is None:
             return False
-        
-        result.retained_at = datetime.now()
-        result.document_id = document_id
+        event.retained_at = datetime.now(timezone.utc)
+        event.document_id = document_id
+        event.next_retry_at = None
+        session.add(event)
         session.commit()
         return True
     finally:
         session.close()
 
 
-async def mark_event_as_failed(event_id: int, error: str) -> bool:
-    """
-    Mark an event as permanently failed.
-    
-    Args:
-        event_id: MemoryEvent ID
-        error: Error message
-    
-    Returns:
-        True if successful
-    """
-    session = next(get_session())
+async def mark_event_as_failed(event_id: str, error: str) -> bool:
+    del error
+    session = _session()
     try:
-        statement = select(MemoryEvent).where(MemoryEvent.id == event_id)
-        result = session.exec(statement).first()
-        
-        if not result:
+        event = session.exec(
+            select(MemoryEvent).where(MemoryEvent.id == event_id)
+        ).first()
+        if event is None:
             return False
-        
-        result.failed_at = datetime.now()
-        result.error = error
+        event.failed_at = datetime.now(timezone.utc)
+        event.next_retry_at = None
+        session.add(event)
         session.commit()
         return True
     finally:
         session.close()
 
 
-async def retry_failed_events() -> List[int]:
-    """
-    Retry all failed events.
-    
-    Returns:
-        List of successfully retried event IDs
-    """
-    session = next(get_session())
+async def retry_failed_events() -> list[str]:
+    session = _session()
     try:
-        statement = select(MemoryEvent).where(
-            MemoryEvent.failed_at != None
-        )
-        results = session.exec(statement)
-        failed_events = results.all()
-        
-        retried = []
-        for event in failed_events:
+        events = session.exec(
+            select(MemoryEvent).where(MemoryEvent.failed_at.is_not(None))
+        ).all()
+        for event in events:
             event.failed_at = None
             event.retry_count = 0
-            session.commit()
-            retried.append(event.id)
-        
-        logger.info(f"Retried {len(retried)} failed events")
-        return retried
+            event.next_retry_at = None
+            session.add(event)
+        session.commit()
+        return [event.id for event in events]
     finally:
         session.close()

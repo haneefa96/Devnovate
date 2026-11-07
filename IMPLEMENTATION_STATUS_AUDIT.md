@@ -1,7 +1,7 @@
 # Munshi Implementation Status Audit
 
 **Audit date:** 2026-11-07  
-**Scope:** Current implementation, external configuration, focused live checks, backend and frontend tests, and deployment files. No runtime source, database schema, database records, or credentials were changed by this audit.
+**Scope:** Current implementation, external configuration, focused live checks, backend and frontend tests, and deployment files. Prompt 1 made documentation-only changes. Prompt 2 repaired the existing Hindsight adapter/outbox without changing database schema or credentials.
 
 The original PDF project document is present, but local PDF text extraction tools were unavailable and the file viewer exposed compressed PDF data rather than readable text. Its Markdown companion `PROJECT_ANALYSIS.md` and the available Markdown specifications were inspected; the PDF's full text was not independently verified.
 
@@ -23,13 +23,13 @@ It is **not yet an end-to-end collections application**. The most important gaps
 - The database is local SQLite, not Supabase; this is intentional for the current stage. The seeded demo data is hard-coded in Python and persisted in SQLite.
 - Most documented REST routes exist and use SQLite, but several return fixed or incomplete results. The simulation HTTP routes do not execute the existing simulation engine.
 - Collector and Risk implementations have unit tests, but no ordinary API or scheduled workflow invokes them. The daily loop is unfinished.
-- Hindsight Cloud was previously reached directly with synthetic retain/recall using SDK 1.2.0 in a separate verification environment. Munshi's wrapper still expects the missing `hindsight_client.Client` class. The SDK remains absent from the actual backend virtual environment: the earlier install attempt and two bounded Prompt 2 attempts stalled without output. Direct HTTPS checks to PyPI and its package-file host returned HTTP 200, and no pip index override was found; the exact cause of pip's stall remains undetermined. No dependency manifest was changed.
+- Hindsight Cloud is now verified through Munshi's wrapper using the installed `hindsight-client` 1.2.0 in the active backend Python 3.11.9 environment. Synthetic Cloud tests verified bank create/access, retain, recall, reflect, metadata/timestamp handling, customer and business-bank isolation, and outbox processing.
 - A real Groq request succeeded using `openai/gpt-oss-120b`. The configured `qwen/qwen3-32b` customer model was not present in the model list returned during this audit.
 - Band is not connected: credentials are absent, the SDK is not installed, and the bridge only logs what it would post.
-- The backend full suite has **317 passed, 6 failed, and 5 skipped**. Frontend tests and production build pass; frontend lint fails because there is no ESLint configuration.
-- The project is untracked as a directory in its enclosing Git repository (`?? devnovate/`), so a normal Git diff cannot establish the history of individual project files.
+- The current backend full suite has **306 passed, 6 failed, and 2 skipped**. Its six failures are the same five pre-existing Groq mock-patching failures and playbook-title assertion documented in the baseline. Frontend tests and production build pass; frontend lint fails because there is no ESLint configuration.
+- The project has its own Git repository and origin; current generated test/upload artifacts and a pre-existing `.gitignore` edit remain in the worktree and should be reviewed separately before staging.
 
-The current Prompt 1 audit caused no runtime-code changes. The deliverables from this audit are documentation only.
+Prompt 2 implementation and verification details are in section 8.
 
 ## 2. Existing project structure
 
@@ -78,7 +78,7 @@ Generated/cache directories and local data files are also present (including `.c
 | Backend libraries | FastAPI 0.141.1, Uvicorn 0.52.4, SQLModel 0.0.48, SQLAlchemy 2.1.8, Pydantic 2.13.5, pydantic-settings 2.16.2 |
 | Database | SQLite; default URL `sqlite:///./munshi.db` |
 | LLM SDK | Groq 1.7.0 |
-| Hindsight SDK in backend venv | Not installed; three attempts stalled without output; PyPI index and package-file hosts respond over HTTPS |
+| Hindsight SDK in backend venv | `hindsight-client==1.2.0`, installed in the active Python 3.11.9 backend `.venv` and exercised through Munshi's wrapper |
 | Band SDK in backend venv | Not installed |
 | Frontend | React 18.3.1, Vite 5.4.21, TypeScript 5.9.3, Tailwind 3.4.19, TanStack Query 5.107.1, Recharts 2.15.4 |
 | Frontend runtime/tooling | Node 25.9.0, npm 11.12.1, Vitest 2.1.9 |
@@ -101,7 +101,7 @@ The README, Makefile, and Dockerfile assume `uv`, although the active backend en
 | Authentication/authorization | **NOT IMPLEMENTED** | Consistent with the single-demo prototype scope, but not safe for multi-user deployment. |
 | Database migrations | **NOT IMPLEMENTED** | No Alembic or other migration history; existing schemas are not upgraded by `create_all`. |
 | Daily loop | **PLACEHOLDER / MOCK** | `daily_loop.py` contains a TODO for the day’s work and is not started by FastAPI. |
-| Hindsight outbox lifecycle | **PARTIALLY IMPLEMENTED** | A processor exists but is not started by FastAPI. Some outbox field names and constructor arguments do not match the current `MemoryEvent` model. |
+| Hindsight outbox lifecycle | **COMPLETE AND VERIFIED for the Prompt 2 scope** | FastAPI lifespan starts/stops the processor; tests cover persistence, retries, duplicate prevention, and confirmed-success status. |
 
 ## 5. Frontend implementation status
 
@@ -158,17 +158,17 @@ No Supabase setup, database migration, or database write was performed by this a
 
 ## 8. Hindsight integration status
 
-**Overall status: BLOCKED BY CREDENTIALS OR EXTERNAL DEPENDENCY for Munshi's application wrapper; direct Cloud operations were previously verified outside the backend venv.**
+**Overall status: COMPLETE AND VERIFIED for the Prompt 2 adapter/outbox scope.** The installed SDK and Munshi's own wrapper were exercised against Hindsight Cloud with synthetic data; mocked tests separately cover failure and retry behavior.
 
-- `HINDSIGHT_API_KEY` and `HINDSIGHT_BASE_URL` are non-empty and load through backend settings. Values are withheld; only the configured host is reported.
-- In the earlier direct Cloud check, SDK 1.2.0 reported API version 1.1.0. A synthetic bank was created, a synthetic fact retained, and recall returned a result. No customer data or drafts were used. The test bank was left in place.
-- The current backend `.venv` still does not have `hindsight-client`. An earlier install attempt produced no output for more than six minutes. During Prompt 2, two further bounded attempts (the configured default index and explicit `https://pypi.org/simple`) each produced no output within 60 seconds and were stopped. Separate HTTPS checks to `pypi.org` and `files.pythonhosted.org` returned HTTP 200; no pip index URL override was found. The lower-level pip failure was not captured, so its cause is unknown. No project dependency manifest was changed.
-- Current official Python SDK documentation exports `Hindsight`. The application wrapper in `backend/munshi/memory/client.py` constructs `hindsight_client.Client`, so Munshi's client is not compatible with the verified SDK API. No successful operation through Munshi's wrapper has been established.
-- Five Hindsight integration tests are skipped unconditionally with “Requires Hindsight to be running”; they do not exercise the live configured Cloud service. The focused Prompt 2 run collected 62 tests: 56 passed, one failed, and these five integration tests skipped. The failure, `tests/test_queries.py::TestParsePlaybook.test_parse_playbook_json`, expected `Payment Collection` but got `Payment Collection Playbook`; it is unrelated to Hindsight and was present in the baseline audit.
-- The outbox processor is not launched by FastAPI. Its current code references fields/arguments that differ from `MemoryEvent`, does not reliably honor retry schedules, and has no verified idempotent retain path.
-- Customer-specific memory retrieval, metadata/timestamp handling through the app wrapper, agent use of memories, and memory updates are **NOT VERIFIED**.
+- `HINDSIGHT_API_KEY` and `HINDSIGHT_BASE_URL` are configured and loaded by backend settings; values are withheld. Live synthetic Cloud tests exercised Munshi's wrapper.
+- `hindsight-client==1.2.0` is installed in `backend\.venv` running Python 3.11.9. The declared dependency already existed in `backend/pyproject.toml`; its version range was not changed. The official SDK docs and installed package confirm `Hindsight`, async `a*` methods, `RetainResponse.success`, recall `.results`, and reflect `.structured_output`.
+- The adapter uses configured URL/key/timeout, SDK async methods, stable document IDs, customer tags, metadata serialization, and structured reflect output. Network failures raise sanitized `HindsightUnavailable`; readiness marks memory pending, while Collector/Risk fall back to ledger evidence.
+- Two real Cloud tests passed with synthetic data: the application wrapper created/accessed banks, retained/recalled a fact, reflected, verified available timestamp/metadata, isolated tagged customer results and a second business bank, and processed a local SQLite outbox row through the wrapper. Live tests require `MUNSHI_RUN_HINDSIGHT_INTEGRATION=1`.
+- SDK recall responses do not always populate `occurred_start`; Cloud list results exposed `mentioned_at`/`var_date`. The adapter normalizes available timestamp fields; metadata was returned in the live recall result.
+- FastAPI lifespan starts and stops the outbox worker. A process-local lock prevents overlapping passes; stable event IDs are sent as Hindsight document IDs, retries honor due times and stop at the configured bound, and success is recorded only after confirmed retention. Mocked tests cover retry/failure handling, duplicate processing, redaction and lifecycle.
+- Outbox metadata is restricted to event/customer/invoice identifiers; phone numbers with common spaces/parentheses/separators, labeled account numbers, IFSC codes, and labeled UPI/VPA identifiers are redacted; known unsent-draft kinds are excluded. This does not replace careful upstream construction of durable learned facts.
 
-The Prompt 2 implementation was stopped before runtime changes because the required SDK could not be installed in the backend environment. The existing 56 passing focused tests exercise mocked/local behavior only; they do not verify the wrapper against Hindsight Cloud.
+The final focused run had 58 passed, one pre-existing parser-title failure and two expected live-test skips. The full backend run collected 314 tests: 306 passed, 6 failed, 2 skipped. The failures match the baseline: five Groq mock-patching failures and the playbook-title assertion. No unrelated failures were changed.
 
 ## 9. Band AI status
 
@@ -195,14 +195,14 @@ Official reference checked during this audit: [Band Python quickstart](https://d
 | 6 | GSTIN validation | **PARTIALLY IMPLEMENTED** | Format/check-character/state helpers exist. They do not check the government registry or prove active legal ownership. Invoice GSTIN cannot be supplied in the normal flow; demo fixture GSTINs fail the implemented checksum. |
 | 7 | Purchase order validation | **PARTIALLY IMPLEMENTED** | Required PO number checks work. Amount tolerance is skipped when no PO amount is supplied; normal API has no PO amount field. |
 | 8 | Required document validation | **COMPLETE AND VERIFIED** | Upload metadata is stored in SQLite and readiness checks configured required document types; file bytes are on local disk. |
-| 9 | Learned customer requirements | **PARTIALLY IMPLEMENTED** | Requirement codes and precedence are implemented; live app retrieval is blocked by the wrapper. `EINVOICE_IRN` has no corresponding document/IRN field. |
+| 9 | Learned customer requirements | **PARTIALLY IMPLEMENTED** | Requirement codes and precedence are implemented; the repaired app wrapper now retrieves memory, but `EINVOICE_IRN` has no corresponding document/IRN field. |
 | 10 | Collector agent | **PARTIALLY IMPLEMENTED** | Draft logic has unit coverage, but no normal API/scheduler path invokes it. |
 | 11 | Risk agent | **PARTIALLY IMPLEMENTED** | Signal/classification logic and evidence references have tests; normal payment/message flows do not trigger reassessment. |
 | 12 | Reminder drafting | **PARTIALLY IMPLEMENTED** | Collector can draft when directly invoked; no live daily trigger or UI/API draft-generation path exists. |
 | 13 | Owner approval workflow | **PARTIALLY IMPLEMENTED** | Approve/edit/reject mutations are stored; approval immediately marks the action `SENT` before actual delivery. |
 | 14 | Inbound customer messages | **PARTIALLY IMPLEMENTED** | Endpoint persists messages and a local memory-event row; no live channel ingestion or risk-worker queue exists. |
 | 15 | Payment recording | **COMPLETE AND VERIFIED** | API enforces outstanding amount, stores payment, and updates invoice status; it does not trigger live memory/Risk workflows. |
-| 16 | Hindsight retention and retrieval | **BLOCKED BY CREDENTIALS OR EXTERNAL DEPENDENCY** | Direct Cloud test previously succeeded; Munshi wrapper is incompatible and the SDK is absent from the active backend venv. |
+| 16 | Hindsight retention and retrieval | **COMPLETE AND VERIFIED for the Prompt 2 adapter/outbox scope** | The official SDK is installed in the active backend venv; live synthetic tests exercised the wrapper, retention, recall, reflection, customer/business isolation, and outbox processing. |
 | 17 | Band AI workflow | **PLACEHOLDER / MOCK** | Command parsing exists; room bridge logs rather than posts and approval routing is absent. |
 | 18 | Simulation engine | **COMPLETE AND VERIFIED** | Deterministic world, profiles, scenarios, time advancement, injection and world-rule tests exist. The HTTP controls are not connected to it. |
 | 19 | Evaluation Arms A/B/C | **PARTIALLY IMPLEMENTED** | Arms, metrics, and runner code/tests exist; no result rows were in SQLite and Arm C depends on Hindsight. |
@@ -279,7 +279,7 @@ Reproduced failures (none were caused by this documentation-only audit; the prev
 6. `tests/test_queries.py::TestParsePlaybook::test_parse_playbook_json`  
    The test expects title `Payment Collection`; parser returns `Payment Collection Playbook`.
 
-The five Hindsight integration tests are explicitly skipped in their source because they require Hindsight; they do not test the configured Cloud connection.
+Two opt-in Hindsight integration tests exercise the application wrapper and outbox against Cloud with synthetic data; both passed in the explicit live run and skip by default.
 
 ### Frontend and runtime
 
@@ -320,7 +320,7 @@ No credential values are reproduced here.
 1. **Approval is not delivery:** approval records `SENT` and `sent_at` before a message is sent. The WhatsApp URL is only a manual handoff; simulator mode has no simulated delivery.
 2. **Agent logic is unreachable in routine operation:** no daily loop or normal API path invokes Collector/Risk.
 3. **Simulation API is disconnected from the actual engine:** tick and injection return success without doing the advertised work.
-4. **Memory retry is not automatic:** the outbox is not started and has schema/API mismatches; memory service failures may be represented as empty results.
+4. **Memory retry is now automatic within the Prompt 2 scope:** the lifespan-managed outbox retries bounded failures. This does not provide a distributed lock across multiple backend processes.
 5. **Financial summary can be misleading:** dashboard and customer overdue totals use invoice face values, not outstanding balance after payments.
 6. **Evidence is lost at API boundary:** drafts have generic reasons and explain endpoints return no evidence.
 7. **Normal invoice flow omits fields needed for R3/R6:** invoice GSTIN and purchase-order amount are not accepted; IRN is not modeled.
@@ -335,8 +335,7 @@ No credential values are reproduced here.
 ## 16. Remaining work
 
 - Keep SQLite for now; do not migrate to Supabase.
-- Repair the Hindsight SDK adapter and test Munshi's own retain/recall/reflect calls.
-- Reconcile the outbox with the actual `MemoryEvent` schema, add idempotency/retry scheduling, and wire startup/shutdown safely.
+- Preserve the verified Hindsight adapter/outbox behavior; address only newly discovered defects. The outbox lock is process-local, not distributed.
 - Resolve the official Band SDK dependency installation, register remote agents, and implement/test real room and command transport.
 - Decide on a supported Groq customer model before changing the configured identifier.
 - Wire the daily loop and controlled Collector/Risk triggers to invoice, payment, and inbound-message workflows.
@@ -357,20 +356,19 @@ No credential values are reproduced here.
 | Invoice readiness | **Modify to close contract gaps only** | R1-R9 and tests exist. Focus on missing invoice GSTIN/PO amount inputs, demo GSTIN fixtures, and blocked learned-memory reads rather than rewriting the rules. |
 | Collector and Risk | **Modify to wire existing logic** | Agents and policy tests exist. The remaining work is runtime triggers, memory evidence, and persistence; do not duplicate agent logic. |
 | Frontend | **Skip rebuilding the seven screens; modify integration gaps** | Screens, central API client, tests, and production build exist. Prioritize live-backend validation and missing UI paths instead of recreating pages. |
-| Prompt 1 credential configuration/audit | **Do not repeat as a setup task** | Groq/Hindsight settings are present; Groq had a live successful request and Hindsight was directly tested in a separate environment. Band remains blocked. Rotate the Groq key if earlier local test output could be exposed. |
-| Prompt 2 Hindsight repair | **Do not skip** | Munshi's wrapper uses the incompatible `Client` class, the package is absent from the active backend venv, and the outbox is not safely running. |
+| Prompt 1 credential configuration/audit | **Do not repeat as a setup task** | Groq/Hindsight settings are present; Groq had a live successful request and Hindsight was subsequently verified through Munshi's wrapper. Band remains blocked. Rotate the Groq key if earlier local test output could be exposed. |
+| Prompt 2 Hindsight repair | **Complete for the requested stage** | Installed SDK 1.2.0, repaired and live-tested the app wrapper, customer/business isolation, and outbox path. |
 | Prompts 3 and 4 | **Not yet confirmed** | Their exact requirements have not been supplied. The recommended stage boundaries below are proposals, not confirmed user-provided prompt contracts. |
 
 ### Recommended stage boundaries
 
-1. **Prompt 2 — Hindsight integration repair:** update only the existing adapter for the current official SDK, verify retain/recall/reflect using synthetic data, reconcile outbox fields/retries, and connect lifecycle only after tests support it.
+1. **Prompt 2 — Hindsight integration repair:** complete. Do not repeat this stage unless new Hindsight integration defects are found.
 2. **Prompt 3 — Band and runtime workflow:** after the official SDK is installable and credentials are configured, verify remote agent setup, room posting, command routing, approval parity, and then wire normal backend triggers for Collector/Risk without bypassing owner approval.
 3. **Prompt 4 — End-to-end simulation/evaluation and product integration:** connect sim APIs to the engine, persist evaluation outputs, reconcile evidence and financial summaries, and verify frontend-to-live-backend workflows.
 
 ## 18. Integration risks
 
-- Direct Hindsight Cloud success does not imply Munshi's wrapper works.
-- Empty memory fallback can be mistaken for “no learned behavior.”
+- Hindsight is integrated through the verified wrapper; live checks used only synthetic data. Continue to treat Cloud outages as unavailable memory, not as “no learned behavior.”
 - Groq's agent model works, but the configured customer model is not listed and structured output/retries have not been verified live.
 - Band Desktop, Band account sign-in, and a registered remote agent API key are distinct setup requirements.
 - Frontend tests with mocked `fetch` do not establish live API compatibility.

@@ -50,15 +50,16 @@ Band assigns an API key to each registered remote agent. The SDK authenticates u
 
 ## Hindsight Cloud
 
-**Direct Cloud result: successful. Application wrapper result: incompatible.**
+**Application wrapper result: verified against Cloud with synthetic data.**
 
-- The configured base URL and key were present. Neither value is reproduced here.
-- A previous direct check installed `hindsight-client` 1.2.0 in an isolated verification environment and used its documented `Hindsight` client. The service returned API version 1.1.0.
-- Created synthetic bank `munshi-config-check-a152a59c20`, retained a non-customer test fact, and recalled one result. The test bank was left in place.
-- The package remains absent from the actual backend `.venv` (`Python 3.11.9`). An earlier install attempt stalled without output for more than six minutes. During Prompt 2, two additional bounded attempts—using the configured default index and then explicit `https://pypi.org/simple`—each stalled without output for 60 seconds and were stopped. Separate HTTPS checks to `pypi.org` and `files.pythonhosted.org` returned HTTP 200; no pip index override was found. Pip emitted no diagnostic, so the exact cause is unknown. No dependency manifest or lockfile was changed.
-- The application's [client.py](../backend/munshi/memory/client.py) uses `hindsight_client.Client`. The installed SDK exports `Hindsight`, not `Client`; the application wrapper therefore reports unavailable even though direct Cloud requests work.
-- Application memory retention/retrieval, timestamp behavior, retries, and agent use of retrieved memories are not verified. The five existing Hindsight integration tests are skipped unconditionally. Update the existing wrapper to the documented SDK before claiming application-level Hindsight integration.
-- Prompt 2's focused backend run collected 62 tests: 56 passed, one failed, and five integration tests skipped. The unrelated existing failure was `tests/test_queries.py::TestParsePlaybook.test_parse_playbook_json` (expected title `Payment Collection`, actual `Payment Collection Playbook`). No code was changed because SDK installation remained the explicit stop condition.
+- `hindsight-client==1.2.0` is installed in the active backend `.venv` (Python 3.11.9). The installed package and official [Python SDK documentation](https://hindsight.vectorize.io/sdks/python) confirm the `Hindsight` client, async methods, and supported response fields.
+- Munshi's existing adapter uses the configured service URL, API key, and timeout. The wrapper's live Cloud tests verified bank access/creation, retain, recall, reflect, timestamp/metadata handling, customer-tag isolation, and separation between business banks.
+- Two opt-in live tests passed using synthetic data only. They are enabled with `MUNSHI_RUN_HINDSIGHT_INTEGRATION=1`; routine automated tests use mocks and local SQLite.
+- The FastAPI lifespan starts and stops the memory outbox worker. Local/mocked tests cover bounded due-time retries, failure status, duplicate processing protection, and recording success only after confirmed retention. Its overlap lock is process-local, not distributed across multiple service processes.
+- Hindsight outages are surfaced as unavailable; readiness marks memory pending, and Collector/Risk fall back to ledger evidence rather than treating an outage as an empty customer history.
+- Outbox retention excludes known unsent-draft kinds and redacts common formatted phone numbers, labeled account numbers, IFSC codes, and labeled UPI/VPA identifiers from content before retention.
+- SDK recall entries do not always populate `occurred_start`; the adapter maps timestamp fields available in responses. Metadata and an available timestamp were observed in the live test.
+- Live integration tests leave their clearly synthetic banks/facts in the configured Cloud service.
 
 Official references: [Python client](https://hindsight.vectorize.io/sdks/python), [Hindsight quick start](https://hindsight.vectorize.io/developer/api/quickstart), [API reference](https://hindsight.vectorize.io/api-reference).
 
@@ -80,21 +81,21 @@ Official references: [Band Python SDK quickstart](https://docs.band.ai/quickstar
 |---|---|
 | Python runtime | 3.11.9 |
 | Groq SDK | 1.7.0; live minimal request passed |
-| Hindsight SDK | 1.2.0 in prior isolated verification environment; absent from active backend `.venv`; install attempt stalled; previous direct retain/recall passed |
+| Hindsight SDK | 1.2.0 installed in active backend `.venv` (Python 3.11.9); Munshi wrapper integration verified |
 | Band SDK | Install blocked by unavailable `band-sdk-core==6.1.1` |
 | Credential loading from a different working directory | Passed; status checks only, no values printed |
 | `.env` Git ignore check | Passed for `backend/.env` |
-| Full backend suite | 328 collected; 317 passed, 6 failed, 5 skipped, 9 warnings |
+| Full backend suite | 314 collected; 306 passed, 6 known baseline failures, 2 skipped |
 | Frontend tests | 13 passed |
 | Frontend production build | Passed |
 | Frontend lint | Failed because ESLint configuration is missing |
 | Backend startup | Temporary Uvicorn server started; `/health` returned HTTP 200 |
 | Focused earlier configuration tests | 8 Groq initialization/model tests and 21 Band tests passed |
-| Prompt 2 focused backend tests | 56 passed, 1 unrelated playbook-title failure, 5 Hindsight integration tests skipped unconditionally |
-| PyPI shell connectivity | `pypi.org` index and `files.pythonhosted.org` distribution host returned HTTP 200; no pip index override found; pip installation still stalled without diagnostics |
+| Prompt 2 focused Hindsight/agent/readiness tests | 58 passed, 1 known unrelated parser-title failure, 2 live tests skipped in default mode |
+| Prompt 2 live Hindsight Cloud tests | 2 passed using synthetic data |
 
 Failure details and the feature/API audit are in the root [implementation audit](../IMPLEMENTATION_STATUS_AUDIT.md).
 
-## Next implementation task
+## Remaining integration work
 
-The next action for Prompt 2 is to resolve why pip stalls in `backend/.venv` despite successful HTTPS checks, then install/verify the official `hindsight-client` there. A single diagnostic retry can use `backend\.venv\Scripts\python.exe -m pip install -v "hindsight-client==1.2.0"` after checking the machine's proxy, certificate, and package-source policy; do not loop retries. Then repair and test the existing adapter/outbox. After that, resolve the official Band SDK package-index dependency and verify a live agent connection. Separately decide whether to update the unsupported configured Groq customer model.
+Prompt 2's Hindsight adapter/outbox scope is complete and verified. Do not reinstall the SDK or rebuild those modules. The next separate integration work is resolving the official Band SDK package-index dependency, configuring registered Collector/Risk agent credentials, and verifying real room messaging. Separately decide whether to update the configured Groq customer model, which was absent from the live model list.

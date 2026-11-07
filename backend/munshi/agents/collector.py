@@ -32,6 +32,7 @@ from munshi.db.models import (
 )
 from munshi.llm.groq_client import groq_client
 from munshi.memory import queries as memory_queries
+from munshi.memory.client import HindsightUnavailable
 
 logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "collector.md"
@@ -124,17 +125,20 @@ class CollectorAgent(BasePolicy):
         reflect: dict[str, Any] = {}
         recalled: list[dict[str, Any]] = []
         if memory_available:
-            reflect = await memory_queries.get_memory_for_collector(
-                bank_name=customer.business.bank_id,
-                customer_id=str(customer_id),
-            )
-            recalled = await memory_queries.memory_store.recall(
-                bank_name=customer.business.bank_id,
-                customer_id=str(customer_id),
-                kind="experience",
-                query=f"Payment and reminder history for invoice {invoice.number}",
-                k=10,
-            )
+            try:
+                reflect = await memory_queries.get_memory_for_collector(
+                    bank_name=customer.business.bank_id,
+                    customer_id=str(customer_id),
+                )
+                recalled = await memory_queries.memory_store.recall(
+                    bank_name=customer.business.bank_id,
+                    customer_id=str(customer_id),
+                    kind="experience",
+                    query=f"Payment and reminder history for invoice {invoice.number}",
+                    k=10,
+                )
+            except HindsightUnavailable:
+                logger.warning("Collector memory service unavailable for customer %s", customer_id)
         recalled = [
             event for event in recalled if _belongs_to_customer(event, customer_id)
         ]

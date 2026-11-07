@@ -4,6 +4,7 @@ Munshi - FastAPI application entry point
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -71,8 +72,21 @@ async def lifespan(_: FastAPI):
     logger.info("Starting Munshi %s (env=%s)", settings.APP_VERSION, settings.APP_ENV)
     init_db()
     logger.info("Database tables initialized successfully")
-    yield
-    logger.info("Munshi shutting down")
+    from munshi.memory.client import get_hindsight_client
+    from munshi.memory.outbox import outbox_processor
+
+    outbox_task = asyncio.create_task(outbox_processor.start())
+    try:
+        yield
+    finally:
+        await outbox_processor.stop()
+        outbox_task.cancel()
+        try:
+            await outbox_task
+        except asyncio.CancelledError:
+            pass
+        await get_hindsight_client().aclose()
+        logger.info("Munshi shutting down")
 
 
 app = FastAPI(

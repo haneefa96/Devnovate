@@ -66,6 +66,21 @@ class MemoryStore:
         """
         from munshi.memory.bank_setup import get_bank_name
         return get_bank_name(business_slug, is_demo=is_demo)
+
+    async def _ensure_bank(self, bank_name: str) -> None:
+        if bank_name in self._banks:
+            return
+        from munshi.memory.bank_setup import get_bank_config
+
+        config = get_bank_config(bank_name)
+        await create_bank(
+            bank_id=bank_name,
+            name=bank_name,
+            mission=config["reflect_mission"],
+            background=config["retained_mission"],
+            disposition=config["disposition"],
+        )
+        self._banks[bank_name] = config
     
     async def create_bank(
         self,
@@ -84,30 +99,19 @@ class MemoryStore:
         Returns:
             Bank creation response
         """
-        if not self.is_available:
-            logger.warning(f"Cannot create bank {bank_name}: Hindsight unavailable")
-            return None
-        
-        try:
-            from munshi.memory.bank_setup import get_bank_config
-            
-            config = get_bank_config(bank_name, business_name or "Demo Business")
-            
-            response = await create_bank(
-                bank_id=bank_name,
-                name=business_name or bank_name,
-                background=config["retained_mission"],
-                disposition=config["disposition"],
-            )
-            
-            if response:
-                self._banks[bank_name] = config
-                logger.info(f"Created memory bank: {bank_name}")
-            
-            return response
-        except Exception as e:
-            logger.error(f"Failed to create bank {bank_name}: {e}")
-            return None
+        from munshi.memory.bank_setup import get_bank_config
+
+        config = get_bank_config(bank_name, business_name or "Demo Business")
+        response = await create_bank(
+            bank_id=bank_name,
+            name=business_name or bank_name,
+            mission=config["reflect_mission"],
+            background=config["retained_mission"],
+            disposition=config["disposition"],
+        )
+        self._banks[bank_name] = config
+        logger.info("Created/accessed memory bank %s", bank_name)
+        return response
     
     async def retain(
         self,
@@ -136,12 +140,9 @@ class MemoryStore:
         Returns:
             Retain response with document_id
         """
-        if not self.is_available:
-            logger.warning(f"Hindsight unavailable - skipping retain for {bank_name}")
-            return None
-        
         if tags is None:
             tags = []
+        await self._ensure_bank(bank_name)
         
         # Build comprehensive tags
         all_tags = tags.copy()
@@ -152,27 +153,21 @@ class MemoryStore:
         if event_type:
             all_tags.append(f"kind:{event_type}")
         
-        try:
-            response = await retain_event(
-                bank_id=bank_name,
-                content=content,
-                context=None,
-                metadata={
-                    "event_type": event_type,
-                    "customer_id": customer_id,
-                    "invoice_id": invoice_id,
-                    **metadata,
-                },
-                timestamp=timestamp,
-            )
-            
-            if response:
-                logger.debug(f"Retained event in {bank_name}: {response.get('document_id', 'unknown')}")
-            
-            return response
-        except Exception as e:
-            logger.error(f"Failed to retain event in {bank_name}: {e}")
-            return None
+        response = await retain_event(
+            bank_id=bank_name,
+            content=content,
+            context=None,
+            metadata={
+                "event_type": event_type or "",
+                "customer_id": customer_id or "",
+                "invoice_id": invoice_id or "",
+                **metadata,
+            },
+            timestamp=timestamp,
+            tags=all_tags,
+        )
+        logger.debug("Retained memory event in bank %s", bank_name)
+        return response
     
     async def retain_batch(
         self,
@@ -189,27 +184,31 @@ class MemoryStore:
         Returns:
             List of retain responses
         """
-        if not self.is_available:
-            logger.warning(f"Hindsight unavailable - skipping batch retain for {bank_name}")
-            return []
-        
         items = []
+        await self._ensure_bank(bank_name)
         for event in events:
+            event_tags = list(event.get("tags", []))
+            customer_id = event.get("customer_id")
+            invoice_id = event.get("invoice_id")
+            if customer_id:
+                event_tags.append(f"customer:{customer_id}")
+            if invoice_id:
+                event_tags.append(f"invoice:{invoice_id}")
+            if event.get("event_type"):
+                event_tags.append(f"kind:{event['event_type']}")
             items.append({
                 "content": event.get("content", ""),
                 "context": event.get("context"),
                 "metadata": event.get("metadata", {}),
                 "timestamp": event.get("timestamp"),
+                "tags": list(dict.fromkeys(event_tags)),
+                "document_id": event.get("document_id"),
             })
-        
-        try:
-            from munshi.memory.client import retain_events_batch
-            response = await retain_events_batch(bank_id=bank_name, items=items)
-            logger.info(f"Retained {len(events)} events in {bank_name}")
-            return response
-        except Exception as e:
-            logger.error(f"Failed to batch retain events in {bank_name}: {e}")
-            return []
+        from munshi.memory.client import retain_events_batch
+
+        response = await retain_events_batch(bank_id=bank_name, items=items)
+        logger.info("Retained %d events in bank %s", len(events), bank_name)
+        return response
     
     async def recall(
         self,
@@ -234,13 +233,10 @@ class MemoryStore:
         Returns:
             List of memory events
         """
-        if not self.is_available:
-            logger.warning(f"Hindsight unavailable - skipping recall for {bank_name}")
-            return []
-        
         # Build query with filters
         if query is None:
             query = ""
+        await self._ensure_bank(bank_name)
         
         if customer_id:
             query = f"customer:{customer_id} {query}".strip()
@@ -248,21 +244,21 @@ class MemoryStore:
         if kind:
             query = f"kind:{kind} {query}".strip()
         
-        try:
-            max_tokens = k * 400  # Approximate tokens per result
-            
-            memories = await recall_memories(
-                bank_id=bank_name,
-                query=query,
-                max_tokens=max_tokens,
-            )
-            
-            parsed = parse_memory_events(memories)
-            logger.debug(f"Recalled {len(parsed)} memories from {bank_name}")
-            return parsed
-        except Exception as e:
-            logger.error(f"Failed to recall memories from {bank_name}: {e}")
-            return []
+        tags = []
+        if customer_id:
+            tags.append(f"customer:{customer_id}")
+        if kind:
+            tags.append(f"kind:{kind}")
+        memories = await recall_memories(
+            bank_id=bank_name,
+            query=query,
+            max_tokens=k * 400,
+            tags=tags or None,
+            tags_match="all",
+        )
+        parsed = parse_memory_events(memories)
+        logger.debug("Recalled %d memories from bank %s", len(parsed), bank_name)
+        return parsed
     
     async def reflect(
         self,
@@ -283,32 +279,27 @@ class MemoryStore:
         Returns:
             JSON with requirements[], conflicts[], playbook text
         """
-        if not self.is_available:
-            logger.warning(f"Hindsight unavailable - skipping reflect for {bank_name}")
-            return {"requirements": [], "conflicts": [], "playbook": ""}
-        
         # Build query with customer filter
         full_query = query or ""
+        await self._ensure_bank(bank_name)
+        tags = []
         if customer_id:
             full_query = f"Customer: {customer_id}. {full_query}".strip()
-        
-        try:
-            response = await reflect_on_memories(
-                bank_id=bank_name,
-                query=full_query,
-                context=context,
-            )
-            
-            parsed = parse_reflect_response(response)
-            logger.debug(f"Reflected on memories in {bank_name}")
-            return {
-                "requirements": parsed.requirements,
-                "conflicts": parsed.conflicts,
-                "playbook": parsed.playbook,
-            }
-        except Exception as e:
-            logger.error(f"Failed to reflect on memories in {bank_name}: {e}")
-            return {"requirements": [], "conflicts": [], "playbook": ""}
+            tags.append(f"customer:{customer_id}")
+        response = await reflect_on_memories(
+            bank_id=bank_name,
+            query=full_query,
+            context=context,
+            tags=tags or None,
+            tags_match="all",
+        )
+        parsed = parse_reflect_response(response)
+        logger.debug("Reflected on memories in bank %s", bank_name)
+        return {
+            "requirements": [item.model_dump() for item in parsed.requirements],
+            "conflicts": [item.model_dump() for item in parsed.conflicts],
+            "playbook": parsed.playbook,
+        }
     
     async def get_playbook(
         self,
@@ -346,20 +337,13 @@ class MemoryStore:
         Returns:
             List of memory documents
         """
-        if not self.is_available:
-            logger.warning(f"Hindsight unavailable - skipping list_memories for {bank_name}")
-            return []
-        
-        try:
-            memories = await list_bank_memories(
-                bank_id=bank_name,
-                limit=limit,
-                offset=offset,
-            )
-            return parse_memory_events(memories)
-        except Exception as e:
-            logger.error(f"Failed to list memories in {bank_name}: {e}")
-            return []
+        await self._ensure_bank(bank_name)
+        memories = await list_bank_memories(
+            bank_id=bank_name,
+            limit=limit,
+            offset=offset,
+        )
+        return parse_memory_events(memories)
     
     async def get_memory_for_readiness(
         self,

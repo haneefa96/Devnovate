@@ -168,11 +168,21 @@ def parse_memory_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "id": event.get("document_id") or event.get("id"),
             "timestamp": event.get("timestamp"),
             "content": event.get("content"),
-            "kind": event.get("kind") or event.get("tags", [None])[0] if event.get("tags") else None,
-            "customer_id": event.get("customer_id"),
-            "invoice_id": event.get("invoice_id"),
-            "metadata": event.get("metadata", {}),
-            "tags": event.get("tags", []),
+            "kind": event.get("kind")
+            or next(
+                (
+                    tag.removeprefix("kind:")
+                    for tag in event.get("tags", [])
+                    if tag.startswith("kind:")
+                ),
+                None,
+            ),
+            "customer_id": event.get("customer_id")
+            or event.get("metadata", {}).get("customer_id"),
+            "invoice_id": event.get("invoice_id")
+            or event.get("metadata", {}).get("invoice_id"),
+            "metadata": event.get("metadata") or {},
+            "tags": event.get("tags") or [],
         })
     return parsed
 

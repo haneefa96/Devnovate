@@ -1,213 +1,271 @@
-"""
-Munshi - Test memory outbox
-"""
+"""Tests for outbox persistence, retries, idempotency, and lifecycle."""
+
+import asyncio
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from datetime import datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock, patch, MagicMock as Mock
+from sqlmodel import Session, SQLModel, create_engine, select
+from sqlalchemy.pool import StaticPool
+
+from munshi.db.models import MemoryEvent
 
 
-class TestOutboxProcessor:
-    """Test OutboxProcessor class."""
-    
-    @pytest.fixture
-    def outbox_processor(self):
-        """Create OutboxProcessor instance."""
-        from munshi.memory.outbox import OutboxProcessor
-        processor = OutboxProcessor()
-        return processor
-    
-    def test_outbox_processor_initialization(self, outbox_processor):
-        """Test OutboxProcessor initialization."""
-        assert outbox_processor._running is False
-        assert outbox_processor._interval_seconds == 60
-        assert outbox_processor._max_retries == 5
-    
-    def test_outbox_processor_custom_config(self):
-        """Test OutboxProcessor with custom config."""
-        import os
-        from munshi.memory.outbox import OutboxProcessor
-        
-        with patch.dict(os.environ, {
-            "OUTBOX_INTERVAL": "120",
-            "OUTBOX_MAX_RETRIES": "3",
-            "OUTBOX_RETRY_DELAY": "600",
-        }):
-            processor = OutboxProcessor()
-            assert processor._interval_seconds == 120
-            assert processor._max_retries == 3
-            assert processor._retry_delay_seconds == 600
+@pytest.fixture
+def outbox_db(monkeypatch):
+    from munshi.memory import outbox
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    SQLModel.metadata.create_all(engine)
+
+    def session_generator():
+        with Session(engine) as session:
+            yield session
+
+    monkeypatch.setattr(outbox, "get_session", session_generator)
+    monkeypatch.setattr(
+        "munshi.memory.queries.memory_store._ensure_bank",
+        AsyncMock(),
+    )
+    yield engine
+    engine.dispose()
 
 
-class TestOutboxOperations:
-    """Test outbox operations."""
-    
-    @pytest.mark.asyncio
-    async def test_queue_memory_event(self):
-        """Test queuing a memory event."""
-        from munshi.memory.outbox import queue_memory_event
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            # Mock MemoryEvent
-            with patch('munshi.memory.outbox.MemoryEvent') as MockMemoryEvent:
-                mock_event = MagicMock()
-                mock_event.id = 1
-                MockMemoryEvent.return_value = mock_event
-                
-                result = await queue_memory_event(
-                    bank_name="munshi-test",
-                    content="Test content",
-                    timestamp=datetime.now(),
-                )
-                
-                assert result is not None
+def _insert_event(engine, **values):
+    defaults = {
+        "id": "evt_test_123",
+        "bank_name": "munshi-synthetic",
+        "kind": "payment_received",
+        "event_type": "payment_received",
+        "content": "Synthetic payment preference fact",
+        "timestamp": datetime.now(timezone.utc),
+    }
+    defaults.update(values)
+    with Session(engine) as session:
+        event = MemoryEvent(**defaults)
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        return event.id
 
 
-class TestMarkEventStatus:
-    """Test marking event status."""
-    
-    @pytest.mark.asyncio
-    async def test_mark_event_as_retained(self):
-        """Test marking event as retained."""
-        from munshi.memory.outbox import mark_event_as_retained
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            # Mock select and result
-            mock_result = MagicMock()
-            mock_event = MagicMock()
-            mock_event.id = 1
-            mock_result.first.return_value = mock_event
-            mock_session.exec.return_value = mock_result
-            
-            result = await mark_event_as_retained(
-                event_id=1,
-                document_id="doc_123",
-            )
-            
-            assert result is True
-            mock_session.commit.assert_called_once()
-    
-    @pytest.mark.asyncio
-    async def test_mark_event_as_retained_not_found(self):
-        """Test marking non-existent event as retained."""
-        from munshi.memory.outbox import mark_event_as_retained
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            mock_result = MagicMock()
-            mock_result.first.return_value = None
-            mock_session.exec.return_value = mock_result
-            
-            result = await mark_event_as_retained(
-                event_id=999,
-                document_id="doc_123",
-            )
-            
-            assert result is False
-    
-    @pytest.mark.asyncio
-    async def test_mark_event_as_failed(self):
-        """Test marking event as failed."""
-        from munshi.memory.outbox import mark_event_as_failed
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            mock_result = MagicMock()
-            mock_event = MagicMock()
-            mock_event.id = 1
-            mock_result.first.return_value = mock_event
-            mock_session.exec.return_value = mock_result
-            
-            result = await mark_event_as_failed(
-                event_id=1,
-                error="Hindsight unavailable",
-            )
-            
-            assert result is True
-            mock_session.commit.assert_called_once()
+def _read_event(engine, event_id):
+    with Session(engine) as session:
+        return session.exec(
+            select(MemoryEvent).where(MemoryEvent.id == event_id)
+        ).one()
 
 
-class TestRetryFailedEvents:
-    """Test retrying failed events."""
-    
-    @pytest.mark.asyncio
-    async def test_retry_failed_events(self):
-        """Test retrying failed events."""
-        from munshi.memory.outbox import retry_failed_events
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            # Mock failed events
-            mock_result = MagicMock()
-            mock_event1 = MagicMock()
-            mock_event1.id = 1
-            mock_event2 = MagicMock()
-            mock_event2.id = 2
-            mock_result.all.return_value = [mock_event1, mock_event2]
-            mock_session.exec.return_value = mock_result
-            
-            result = await retry_failed_events()
-            
-            assert len(result) == 2
-            assert result == [1, 2]
+def test_processor_defaults_and_custom_configuration(monkeypatch):
+    from munshi.memory.outbox import OutboxProcessor
+
+    processor = OutboxProcessor()
+    assert processor._running is False
+    assert processor._interval_seconds == 60
+    assert processor._max_retries == 5
+
+    monkeypatch.setenv("OUTBOX_INTERVAL", "120")
+    monkeypatch.setenv("OUTBOX_MAX_RETRIES", "3")
+    monkeypatch.setenv("OUTBOX_RETRY_DELAY", "600")
+    configured = OutboxProcessor()
+    assert configured._interval_seconds == 120
+    assert configured._max_retries == 3
+    assert configured._retry_delay_seconds == 600
 
 
-class TestGetPendingCount:
-    """Test getting pending event count."""
-    
-    @pytest.mark.asyncio
-    async def test_get_pending_count(self):
-        """Test getting pending count."""
-        from munshi.memory.outbox import OutboxProcessor
-        
-        processor = OutboxProcessor()
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            mock_result = MagicMock()
-            mock_event1 = MagicMock()
-            mock_event2 = MagicMock()
-            mock_result.all.return_value = [mock_event1, mock_event2]
-            mock_session.exec.return_value = mock_result
-            
-            count = await processor.get_pending_count()
-            
-            assert count == 2
+@pytest.mark.asyncio
+async def test_queue_event_deduplicates_and_uses_actual_model_fields(outbox_db):
+    from munshi.memory.outbox import queue_memory_event
+
+    timestamp = datetime(2026, 11, 7, 10, tzinfo=timezone.utc)
+    first = await queue_memory_event(
+        bank_name="munshi-synthetic",
+        content="Synthetic payment preference",
+        timestamp=timestamp,
+        customer_id="cust-synthetic",
+        event_type="observation",
+        metadata={"source": "synthetic"},
+    )
+    second = await queue_memory_event(
+        bank_name="munshi-synthetic",
+        content="Synthetic payment preference",
+        timestamp=timestamp,
+        customer_id="cust-synthetic",
+        event_type="observation",
+        metadata={"source": "synthetic"},
+    )
+
+    assert first.id == second.id
+    persisted = _read_event(outbox_db, first.id)
+    assert persisted.metadata_["customer_id"] == "cust-synthetic"
+    assert persisted.content_hash
 
 
-class TestGetFailedCount:
-    """Test getting failed event count."""
-    
-    @pytest.mark.asyncio
-    async def test_get_failed_count(self):
-        """Test getting failed count."""
-        from munshi.memory.outbox import OutboxProcessor
-        
-        processor = OutboxProcessor()
-        
-        with patch('munshi.memory.outbox.get_session') as mock_get_session:
-            mock_session = MagicMock()
-            mock_get_session.return_value = iter([mock_session])
-            
-            mock_result = MagicMock()
-            mock_event1 = MagicMock()
-            mock_result.all.return_value = [mock_event1]
-            mock_session.exec.return_value = mock_result
-            
-            count = await processor.get_failed_count()
-            
-            assert count == 1
+@pytest.mark.asyncio
+async def test_successful_retain_is_confirmed_and_redacts_sensitive_values(
+    outbox_db, monkeypatch
+):
+    from munshi.memory import outbox
+
+    event_id = _insert_event(
+        outbox_db,
+        content=(
+            "Synthetic contact +91 (98765) 43210 and 09876-543210; "
+            "account number 123456789012 IFSC ABCD0123456; "
+            "UPI ID: user.name@upi"
+        ),
+        metadata_={"customer_id": "cust-synthetic"},
+    )
+    retain = AsyncMock(return_value={"success": True, "document_id": "ignored"})
+    monkeypatch.setattr(outbox, "get_session", outbox.get_session)
+    with (
+        patch("munshi.memory.client.is_hindsight_available", return_value=True),
+        patch("munshi.memory.client.retain_event", retain),
+    ):
+        await outbox.OutboxProcessor().process_outbox()
+
+    persisted = _read_event(outbox_db, event_id)
+    assert persisted.retained_at is not None
+    assert persisted.document_id == event_id
+    assert persisted.retry_count == 0
+    kwargs = retain.await_args.kwargs
+    assert kwargs["document_id"] == event_id
+    assert kwargs["tags"] == ["customer:cust-synthetic", "kind:payment_received"]
+    assert "+91 (98765) 43210" not in kwargs["content"]
+    assert "09876-543210" not in kwargs["content"]
+    assert "123456789012" not in kwargs["content"]
+    assert "ABCD0123456" not in kwargs["content"]
+    assert "user.name@upi" not in kwargs["content"]
+
+
+@pytest.mark.asyncio
+async def test_failed_retain_schedules_bounded_retry(outbox_db):
+    from munshi.memory import outbox
+    from munshi.memory.client import HindsightUnavailable
+
+    event_id = _insert_event(outbox_db)
+    processor = outbox.OutboxProcessor()
+    processor._max_retries = 2
+    processor._retry_delay_seconds = 3600
+    retain = AsyncMock(side_effect=HindsightUnavailable("service unavailable"))
+    with (
+        patch("munshi.memory.client.is_hindsight_available", return_value=True),
+        patch("munshi.memory.client.retain_event", retain),
+    ):
+        await processor.process_outbox()
+        scheduled = _read_event(outbox_db, event_id)
+        assert scheduled.retry_count == 1
+        retry_at = scheduled.next_retry_at
+        if retry_at.tzinfo is not None:
+            retry_at = retry_at.replace(tzinfo=None)
+        assert retry_at > datetime.now()
+
+        await processor.process_outbox()
+        assert retain.await_count == 1
+
+        with Session(outbox_db) as session:
+            due = session.get(MemoryEvent, event_id)
+            due.next_retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+            session.add(due)
+            session.commit()
+        await processor.process_outbox()
+
+    failed = _read_event(outbox_db, event_id)
+    assert failed.retry_count == 2
+    assert failed.failed_at is not None
+    assert failed.retained_at is None
+    assert retain.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_repeated_and_concurrent_processing_do_not_duplicate_retains(outbox_db):
+    from munshi.memory import outbox
+
+    event_id = _insert_event(outbox_db)
+
+    async def retain_once(**_kwargs):
+        await asyncio.sleep(0.02)
+        return {"success": True}
+
+    retain = AsyncMock(side_effect=retain_once)
+    processor = outbox.OutboxProcessor()
+    with (
+        patch("munshi.memory.client.is_hindsight_available", return_value=True),
+        patch("munshi.memory.client.retain_event", retain),
+    ):
+        await asyncio.gather(
+            processor.process_outbox(),
+            processor.process_outbox(),
+        )
+        await processor.process_outbox()
+
+    assert retain.await_count == 1
+    assert _read_event(outbox_db, event_id).retained_at is not None
+
+
+@pytest.mark.asyncio
+async def test_draft_events_are_never_retained(outbox_db):
+    from munshi.memory import outbox
+
+    event_id = _insert_event(
+        outbox_db,
+        kind="reminder_draft",
+        event_type="reminder_draft",
+        content="Synthetic unsent draft",
+    )
+    retain = AsyncMock(return_value={"success": True})
+    with (
+        patch("munshi.memory.client.is_hindsight_available", return_value=True),
+        patch("munshi.memory.client.retain_event", retain),
+    ):
+        await outbox.OutboxProcessor().process_outbox()
+
+    assert retain.await_count == 0
+    assert _read_event(outbox_db, event_id).failed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_worker_start_stop_is_idempotent():
+    from munshi.memory.outbox import OutboxProcessor
+
+    processor = OutboxProcessor()
+    processor._interval_seconds = 0.001
+    processor.process_outbox = AsyncMock()
+    first_worker = asyncio.create_task(processor.start())
+    await asyncio.sleep(0.01)
+    second_worker = asyncio.create_task(processor.start())
+    await second_worker
+    await processor.stop()
+    await first_worker
+
+    assert processor._running is False
+    assert processor.process_outbox.await_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_fastapi_lifespan_starts_and_stops_worker(monkeypatch):
+    import munshi.main as main
+    from munshi.memory import outbox
+
+    started = asyncio.Event()
+    stopping = AsyncMock()
+    waiting_start = AsyncMock(side_effect=started.wait)
+    closing = AsyncMock()
+    monkeypatch.setattr(main, "init_db", MagicMock())
+    monkeypatch.setattr(outbox.outbox_processor, "start", waiting_start)
+    monkeypatch.setattr(outbox.outbox_processor, "stop", stopping)
+    monkeypatch.setattr(
+        "munshi.memory.client.get_hindsight_client",
+        MagicMock(return_value=MagicMock(aclose=closing)),
+    )
+
+    async with main.app.router.lifespan_context(main.app):
+        await asyncio.sleep(0)
+        started.set()
+    assert waiting_start.await_count == 1
+    stopping.assert_awaited_once()
+    closing.assert_awaited_once()
