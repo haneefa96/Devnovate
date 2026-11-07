@@ -20,6 +20,7 @@ from munshi.db.models import (
     ReadinessCheck,
 )
 from munshi.db.session import get_session
+from munshi.services.ledger import outstanding_by_invoice
 
 router = APIRouter(tags=["dashboard"])
 
@@ -44,19 +45,16 @@ def get_dashboard(session: Session = Depends(get_session)) -> DashboardOut:
 
     # Total receivable: SENT, HELD, PARTLY_PAID
     open_statuses = [InvoiceStatus.SENT, InvoiceStatus.HELD, InvoiceStatus.PARTLY_PAID]
-    receivable = session.exec(
-        select(func.coalesce(func.sum(Invoice.amount_paise), 0))
-        .where(Invoice.status.in_(open_statuses))
-    ).one()
-    total_receivable_paise: int = receivable or 0
-
-    # Overdue: open invoices past their due date
-    overdue = session.exec(
-        select(func.coalesce(func.sum(Invoice.amount_paise), 0))
-        .where(Invoice.status.in_(open_statuses))
-        .where(Invoice.due_date < today)
-    ).one()
-    overdue_paise: int = overdue or 0
+    open_invoices = session.exec(
+        select(Invoice).where(Invoice.status.in_(open_statuses))
+    ).all()
+    balances = outstanding_by_invoice(session, open_invoices)
+    total_receivable_paise = sum(balances.values())
+    overdue_paise = sum(
+        balances[invoice.id]
+        for invoice in open_invoices
+        if invoice.id is not None and invoice.due_date < today
+    )
 
     # At-risk customers
     at_risk_rows = session.exec(

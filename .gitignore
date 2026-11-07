@@ -38,6 +38,7 @@ docs/*.md
 !docs/API_CONFIGURATION.md
 !docs/IMPLEMENTATION_STATUS_AUDIT.md
 !docs/IMPLEMENTATION_CHECKLIST.md
+!docs/AI_PROGRESS.md
 docs/images/
 
 # Frontend

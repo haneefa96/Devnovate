@@ -8,6 +8,17 @@ The current full-project findings are in the root [implementation audit](../IMPL
 
 No credential values are included in this document. A failed test assertion emitted the configured Groq key in local test output; treat it as exposed if that output is accessible to anyone else and rotate it in the Groq console. The tests now isolate settings with synthetic values.
 
+## Prompt 3 workflow verification
+
+The backend now runs Collector/Risk workflows using the existing Groq/Hindsight boundaries. This stage made no live provider calls: backend tests use isolated settings/mocks and SQLite fixtures; the two opt-in Hindsight Cloud tests skip in the default test run. Previous Prompt 2 live Hindsight Cloud checks remain recorded below and were not repeated.
+
+- FastAPI lifespan owns a single bounded daily Collector/Risk worker.
+- Payment and inbound-message ledger commits are followed by explicit Risk assessments. A failed assessment is reported without rolling back the committed ledger write.
+- Action approval remains `APPROVED`/`EDITED`; a handoff route checks approval, contact number, planned time and 09:00–19:00 IST. Only the separate owner-report endpoint changes the action to `SENT`, with `OWNER_REPORTED` and `provider_confirmed: false`.
+- The simulation clock accepts hours as well as days so a local demo can advance to an action's planned contact time. Event injection still does not update the simulation world.
+- Dashboard/customer balances subtract recorded payments. Invoice creation accepts the invoice GSTIN and PO amount readiness inputs.
+- Groq wrapper mocks now inject the client before singleton initialization; provider failures are sanitized into explicit error classes/messages.
+
 ## Backend environment loading
 
 The backend reads `backend/.env` from a path resolved relative to `backend/munshi/config.py`, so startup does not depend on the shell's working directory. Values already present in the process environment take precedence over `.env`.
@@ -85,9 +96,9 @@ Official references: [Band Python SDK quickstart](https://docs.band.ai/quickstar
 | Band SDK | Install blocked by unavailable `band-sdk-core==6.1.1` |
 | Credential loading from a different working directory | Passed; status checks only, no values printed |
 | `.env` Git ignore check | Passed for `backend/.env` |
-| Full backend suite | 314 collected; 306 passed, 6 known baseline failures, 2 skipped |
-| Frontend tests | 13 passed |
-| Frontend production build | Passed |
+| Prompt 3 full backend suite | 319 collected; 316 passed, 1 pre-existing parser-title failure, 2 skipped |
+| Prompt 3 frontend tests | 14 passed |
+| Prompt 3 frontend production build | Passed |
 | Frontend lint | Failed because ESLint configuration is missing |
 | Backend startup | Temporary Uvicorn server started; `/health` returned HTTP 200 |
 | Focused earlier configuration tests | 8 Groq initialization/model tests and 21 Band tests passed |
@@ -98,4 +109,4 @@ Failure details and the feature/API audit are in the root [implementation audit]
 
 ## Remaining integration work
 
-Prompt 2's Hindsight adapter/outbox scope is complete and verified. Do not reinstall the SDK or rebuild those modules. The next separate integration work is resolving the official Band SDK package-index dependency, configuring registered Collector/Risk agent credentials, and verifying real room messaging. Separately decide whether to update the configured Groq customer model, which was absent from the live model list.
+Prompt 2's Hindsight adapter/outbox scope remains complete and verified. Do not reinstall the SDK or rebuild those modules. Prompt 3's local workflows are implemented; they do not prove live Groq, Hindsight, or Band behavior. Remaining work includes resolving the official Band SDK package-index dependency, configuring registered Collector/Risk agent credentials, verifying real room messaging, connecting simulation event injection to its world, and deciding whether to update the configured Groq customer model (absent from the prior model-list response).

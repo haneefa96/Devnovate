@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { approveAction, explainAction, fetchActions, rejectAction } from '../api/client'
+import {
+  approveAction,
+  confirmActionDelivery,
+  explainAction,
+  fetchActions,
+  getActionHandoffUrl,
+  rejectAction,
+} from '../api/client'
 import { Button, EmptyState, ErrorNotice, LoadingState, PageHeader, Panel } from '../components/ui'
 import { formatDateTime } from '../lib/format'
 
@@ -14,8 +21,15 @@ export default function Approvals() {
   const [whatsAppLink, setWhatsAppLink] = useState<string | null>(null)
 
   const actions = useQuery({
-    queryKey: ['actions', 'DRAFTED'],
-    queryFn: () => fetchActions('DRAFTED'),
+    queryKey: ['actions', 'review-and-handoff'],
+    queryFn: async () => {
+      const [drafts, approved, edited] = await Promise.all([
+        fetchActions('DRAFTED'),
+        fetchActions('APPROVED'),
+        fetchActions('EDITED'),
+      ])
+      return [...drafts, ...approved, ...edited]
+    },
     refetchInterval: 3000,
   })
 
@@ -28,11 +42,19 @@ export default function Approvals() {
   const approve = useMutation({
     mutationFn: ({ id, body }: { id: number; body?: string }) => approveAction(id, body),
     onSuccess: (result) => {
-      setFeedback(`Draft ${result.id} approved. The backend marked it ${result.status}.`)
-      setWhatsAppLink(result.whatsapp_link ?? null)
+      setFeedback(`Draft ${result.id} approved. It is ready for manual handoff; it has not been sent.`)
+      setWhatsAppLink(result.handoff_url ?? null)
       setEditingId(null)
-      void queryClient.invalidateQueries({ queryKey: ['actions', 'DRAFTED'] })
+      void queryClient.invalidateQueries({ queryKey: ['actions', 'review-and-handoff'] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+    },
+  })
+
+  const confirmDelivery = useMutation({
+    mutationFn: (id: number) => confirmActionDelivery(id),
+    onSuccess: (result) => {
+      setFeedback(`You reported action ${result.id} as sent. WhatsApp provider delivery was not verified.`)
+      void queryClient.invalidateQueries({ queryKey: ['actions', 'review-and-handoff'] })
     },
   })
 
@@ -41,7 +63,7 @@ export default function Approvals() {
     onSuccess: (result) => {
       setFeedback(`Draft ${result.id} rejected.`)
       setWhatsAppLink(null)
-      void queryClient.invalidateQueries({ queryKey: ['actions', 'DRAFTED'] })
+      void queryClient.invalidateQueries({ queryKey: ['actions', 'review-and-handoff'] })
       void queryClient.invalidateQueries({ queryKey: ['dashboard'] })
     },
   })
@@ -65,18 +87,20 @@ export default function Approvals() {
       )}
       {approve.isError && <div className="mb-5"><ErrorNotice message={approve.error.message} /></div>}
       {reject.isError && <div className="mb-5"><ErrorNotice message={reject.error.message} /></div>}
+      {confirmDelivery.isError && <div className="mb-5"><ErrorNotice message={confirmDelivery.error.message} /></div>}
       {actions.isPending ? (
         <LoadingState label="Loading drafts awaiting your review…" />
       ) : actions.isError ? (
         <ErrorNotice message={actions.error.message} retry={() => void actions.refetch()} />
       ) : actions.data.length === 0 ? (
-        <Panel><EmptyState title="Inbox is clear" detail="There are no action drafts waiting for approval." /></Panel>
+        <Panel><EmptyState title="Inbox is clear" detail="There are no drafts awaiting approval or approved handoffs awaiting confirmation." /></Panel>
       ) : (
         <div className="space-y-4">
           {actions.data.map((action) => {
             const body = editedBodies[action.id] ?? action.body
             const isEditing = editingId === action.id
             const isExpanded = expandedId === action.id
+            const isApproved = action.status === 'APPROVED' || action.status === 'EDITED'
             return (
               <Panel key={action.id} className="overflow-hidden">
                 <article>
@@ -89,7 +113,9 @@ export default function Approvals() {
                       <p className="mt-1.5 text-xs text-slate-500">To {action.recipient} · {action.channel} · Invoice #{action.invoice_id}</p>
                       {action.planned_for && <p className="mt-1 text-[11px] text-slate-400">Proposed for {formatDateTime(action.planned_for)} IST</p>}
                     </div>
-                    <span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-700">AWAITING REVIEW</span>
+                    <span className="shrink-0 rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-700">
+                      {isApproved ? 'APPROVED · READY FOR HANDOFF' : 'AWAITING REVIEW'}
+                    </span>
                   </div>
 
                   <div className="p-5 sm:px-6">
@@ -112,8 +138,19 @@ export default function Approvals() {
                       <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-800">Why this draft</p>
                       <p className="mt-1 text-xs leading-5 text-emerald-900/80">{action.why}</p>
                     </div>
+                    {action.evidence.length > 0 && (
+                      <ul className="mt-3 space-y-2">
+                        {action.evidence.map((item) => (
+                          <li key={item.id} className="rounded-md bg-slate-50 p-3 text-xs leading-5 text-slate-600">
+                            {item.date} · {item.text}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
 
                     <div className="mt-4 flex flex-wrap items-center gap-2">
+                      {!isApproved && (
+                        <>
                       <Button disabled={approve.isPending || reject.isPending || !body.trim()} onClick={() => approveDraft(action.id, action.body)}>
                         {approve.isPending && approve.variables?.id === action.id ? 'Approving…' : 'Approve'}
                       </Button>
@@ -139,6 +176,29 @@ export default function Approvals() {
                       >
                         {reject.isPending && reject.variables?.id === action.id ? 'Rejecting…' : 'Reject'}
                       </Button>
+                        </>
+                      )}
+                      {isApproved && action.handoff_url && (
+                        <a
+                          className="inline-flex items-center justify-center rounded-lg bg-emerald-700 px-4 py-2.5 text-xs font-semibold text-white hover:bg-emerald-800"
+                          href={getActionHandoffUrl(action.id)}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open WhatsApp handoff
+                        </a>
+                      )}
+                      {isApproved && action.handoff_opened_at && (
+                        <>
+                          <span className="text-xs text-amber-700">Handoff link opened · awaiting your confirmation</span>
+                          <Button
+                            disabled={confirmDelivery.isPending}
+                            onClick={() => confirmDelivery.mutate(action.id)}
+                          >
+                            {confirmDelivery.isPending && confirmDelivery.variables === action.id ? 'Saving…' : 'I sent this message'}
+                          </Button>
+                        </>
+                      )}
                       <Button
                         variant="quiet"
                         aria-expanded={isExpanded}
@@ -147,7 +207,7 @@ export default function Approvals() {
                         {isExpanded ? 'Hide explanation' : 'View explanation'}
                       </Button>
                     </div>
-                    <label className="mt-4 block text-[11px] text-slate-400">
+                    {!isApproved && <label className="mt-4 block text-[11px] text-slate-400">
                       Rejection reason (optional)
                       <input
                         value={reasons[action.id] ?? ''}
@@ -155,7 +215,7 @@ export default function Approvals() {
                         placeholder="Add a note for the record"
                         className="field-control mt-1.5"
                       />
-                    </label>
+                    </label>}
                   </div>
 
                   {isExpanded && (

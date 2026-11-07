@@ -105,10 +105,10 @@ class Clock:
             return self._current
         return datetime.now(self._TIMEZONE)
 
-    def tick(self, days: int = 1) -> datetime:
-        """Advance the simulated clock by *days* days."""
+    def tick(self, days: int = 1, hours: int = 0) -> datetime:
+        """Advance the simulated clock by the requested days and hours."""
         if settings.SIM_MODE:
-            self._current = self._current + timedelta(days=days)
+            self._current = self._current + timedelta(days=days, hours=hours)
         return self.now()
 
     def reset(self, start: datetime | None = None) -> datetime:

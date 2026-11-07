@@ -8,12 +8,17 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 - [x] SQLite initialization, sessions, transaction rollback, and demo seed tests.
 - [x] Persistent fictional demo records in `backend/munshi.db`.
 - [x] FastAPI health endpoint, route registration, CORS, validation/error envelopes, and DB injection tests.
-- [x] GSTIN helper and R1-R9 readiness unit tests (not all fields are available through the normal API).
-- [x] Collector/Risk logic and policy unit tests (not runtime-triggered).
-- [x] Deterministic simulation world and evaluation code/unit tests (not connected to the simulation HTTP routes).
+- [x] GSTIN helper and R1-R9 readiness unit tests; invoice GSTIN and PO amount flow through the normal API.
+- [x] Collector/Risk policy, evidence, daily-loop, and payment/message-triggered workflows.
+- [x] Dashboard/customer outstanding amounts subtract ledger payments.
+- [x] Action evidence and rationale persist; owner approval, WhatsApp handoff, and owner-reported sending are distinct.
+- [x] Guarded WhatsApp handoff requires an approved action, planned time, valid phone, and 09:00–19:00 IST contact window.
+- [x] Customer detail/explain responses distinguish Hindsight unavailable from an empty memory result.
+- [x] Simulation clock supports day/hour advancement; the simulation event injection/world integration remains outstanding.
+- [x] Updated API, frontend, README, and implementation-status documentation for the operational behavior.
 - [x] Seven React screens and centralized API client.
 - [x] Backend startup and `GET /health` HTTP 200 during this audit.
-- [x] Frontend tests: 13 passed.
+- [x] Frontend tests: 14 passed.
 - [x] Frontend production build: passed.
 - [x] Groq credentials load in backend settings; minimal live request succeeded with `openai/gpt-oss-120b`.
 - [x] Direct Hindsight Cloud synthetic bank/retain/recall was previously verified with SDK 1.2.0 in a separate verification environment.
@@ -26,31 +31,21 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 
 ## Partially completed
 
-- [ ] Dashboard and customer totals should use outstanding, not invoice face, amounts.
-- [ ] Customer page reads ledger history but returns no learned playbook or beliefs.
-- [ ] Invoice/readiness form lacks invoice GSTIN and PO amount.
-- [ ] Readiness R3/R6 cannot be fully exercised through normal API input; GSTIN validation is not registry verification.
 - [ ] `EINVOICE_IRN` has no corresponding document/IRN field.
-- [ ] Owner approval persists but marks the action SENT without actual delivery.
-- [ ] WhatsApp support generates a prefilled link only; no automatic sending or simulator delivery.
-- [ ] Action explanations and plain-language explain return generic/empty evidence.
-- [ ] Simulation HTTP tick/inject are not connected to the deterministic world.
+- [ ] WhatsApp provider sending/delivery verification is not implemented; `SENT` is an owner-reported state only.
+- [ ] Simulation event injection does not update the deterministic simulation world.
 - [ ] Evaluation runner exists but there are no stored `sim_run` results.
-- [ ] Backend test suite has 6 failures; details are in the audit.
+- [ ] Backend suite has one existing parser-title assertion failure; details are in the audit.
 - [x] Prompt 2 focused Hindsight/agent/readiness run: 58 passed, 1 pre-existing parser-title failure, 2 default-mode live integration skips; separate opt-in live Cloud run: 2 passed.
-- [x] Full backend regression run: 306 passed, 6 known baseline failures, 2 skipped; failures are the five Groq mock-patching failures and parser-title mismatch.
+- [x] Prompt 3 backend regression run: 316 passed, 1 existing parser-title assertion failure, 2 live Hindsight tests skipped by default.
+- [x] Prompt 3 frontend tests: 14 passed; production TypeScript/Vite build passed.
 - [ ] Frontend lint fails because ESLint configuration is missing.
 - [ ] Dockerfile refers to absent `uv.lock`; Docker was unavailable for a build check.
 
 ## Needs implementation
 
-- [ ] Wire daily Collector/Risk behavior to backend events while preserving customer isolation and owner approval.
-- [ ] Persist and return evidence for drafts, alerts, and explanations.
-- [ ] Separate approval, handoff, and confirmed delivery states.
 - [ ] Connect simulation endpoints to the simulator and apply event injections.
 - [ ] Persist evaluation runs/results and report missing/failed arms rather than empty success-shaped results.
-- [ ] Correct financial summary calculations to subtract payments.
-- [ ] Resolve the invoice GSTIN, PO amount, and IRN data contract.
 - [ ] Add database migrations and make SQLite path stable across working directories.
 - [ ] Correct the deployment lockfile mismatch and stale documentation.
 - [ ] Add or configure authentication before any multi-user/production use.
@@ -66,19 +61,18 @@ Current evidence and status details are in [IMPLEMENTATION_STATUS_AUDIT.md](./IM
 
 ## Needs testing
 
-- [ ] Resolve five Groq mock-patching failures and the playbook parser title mismatch.
+- [ ] Decide whether to adjust the existing parser-title assertion/behavior; do not mask it as a Prompt 3 regression.
 - [ ] Test Band SDK compatibility, real room posting, inbound commands, and web/Band approval parity.
 - [ ] Test Groq structured output, retries, rate limits, and selected customer model.
 - [ ] Run frontend tests against the live API rather than mocked `fetch`.
-- [ ] Test invoice readiness with complete invoice GSTIN and PO amount contracts.
-- [ ] Test simulation endpoint effects and repeatability.
+- [ ] Test simulation event effects and repeatability after world integration.
 - [ ] Run A/B/C evaluation with all external dependencies available.
 - [ ] Add ESLint configuration and run lint; install/run Ruff if backend lint is required.
 - [ ] Build and run the Docker stack after fixing missing lockfile and confirming Docker availability.
 
 ## Needs final integration
 
-- [ ] Verify the complete path: seed/import → readiness → draft → owner decision → actual handoff → inbound reply/payment → risk/memory update.
+- [ ] Verify the complete path against a running application and external services: seed/import → readiness → draft → owner decision → manual handoff/report → inbound reply/payment → risk/memory update.
 - [ ] Verify web and Band use the same approval state and first-decision-wins rule.
 - [ ] Verify no action is marked sent before the defined delivery step.
 - [ ] Verify Hindsight failures are surfaced without fabricated memories.

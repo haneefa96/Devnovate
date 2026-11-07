@@ -250,14 +250,20 @@ async def test_worker_start_stop_is_idempotent():
 async def test_fastapi_lifespan_starts_and_stops_worker(monkeypatch):
     import munshi.main as main
     from munshi.memory import outbox
+    from munshi.services.daily_loop import daily_loop
 
-    started = asyncio.Event()
+    worker_started = asyncio.Event()
+    daily_started = asyncio.Event()
     stopping = AsyncMock()
-    waiting_start = AsyncMock(side_effect=started.wait)
+    daily_stopping = AsyncMock()
+    waiting_start = AsyncMock(side_effect=worker_started.wait)
+    waiting_daily = AsyncMock(side_effect=daily_started.wait)
     closing = AsyncMock()
     monkeypatch.setattr(main, "init_db", MagicMock())
     monkeypatch.setattr(outbox.outbox_processor, "start", waiting_start)
     monkeypatch.setattr(outbox.outbox_processor, "stop", stopping)
+    monkeypatch.setattr(daily_loop, "run", waiting_daily)
+    monkeypatch.setattr(daily_loop, "stop", daily_stopping)
     monkeypatch.setattr(
         "munshi.memory.client.get_hindsight_client",
         MagicMock(return_value=MagicMock(aclose=closing)),
@@ -265,7 +271,10 @@ async def test_fastapi_lifespan_starts_and_stops_worker(monkeypatch):
 
     async with main.app.router.lifespan_context(main.app):
         await asyncio.sleep(0)
-        started.set()
+        worker_started.set()
+        daily_started.set()
     assert waiting_start.await_count == 1
+    assert waiting_daily.await_count == 1
     stopping.assert_awaited_once()
+    daily_stopping.assert_awaited_once()
     closing.assert_awaited_once()

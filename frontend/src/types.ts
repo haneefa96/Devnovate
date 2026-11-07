@@ -40,6 +40,8 @@ export interface CustomerDetail {
   playbook: { text: string; updating: boolean }
   beliefs: Belief[]
   timeline: Array<{ date: string; kind: string; text: string }>
+  outstanding_paise: number
+  memory_status: 'AVAILABLE' | 'UNAVAILABLE'
 }
 
 export interface DashboardSummary {
@@ -64,6 +66,8 @@ export interface InvoiceCreateRequest {
   due_date: string
   amount_paise: number
   po_number?: string
+  invoice_gstin?: string
+  po_amount_paise?: number
 }
 
 export interface InvoiceCreateResult {
@@ -93,6 +97,10 @@ export interface ActionDraft {
   attachments: string[]
   status: ActionStatus
   why: string
+  evidence: Evidence[]
+  handoff_url: string | null
+  handoff_opened_at: string | null
+  delivery_confirmation_source: string | null
 }
 
 export interface ActionExplanation {
@@ -105,7 +113,17 @@ export interface ApprovalResult {
   status: ActionStatus
   sent_at?: string | null
   whatsapp_link?: string | null
+  handoff_url?: string | null
   memory_event_id?: string | null
+  handoff_status: string
+}
+
+export interface DeliveryConfirmationResult {
+  id: number
+  status: ActionStatus
+  sent_at: string
+  delivery_confirmation_source: 'OWNER_REPORTED'
+  provider_confirmed: false
 }
 
 export interface RejectionResult {
@@ -121,6 +139,7 @@ export interface RiskAlert {
   signals: string[]
   suggestion: string | null
   evidence: Evidence[]
+  memory_status: 'AVAILABLE' | 'UNAVAILABLE'
   status: 'OPEN' | 'ACKNOWLEDGED' | 'DISMISSED'
   created_at: string
 }

@@ -39,16 +39,19 @@ def reset_simulation(
 
 
 @router.post("/sim/tick", response_model=SimTickOut)
-def tick_simulation(days: int = 1) -> SimTickOut:
-    """Advance the simulated clock by N days."""
+def tick_simulation(days: int = 1, hours: int = 0) -> SimTickOut:
+    """Advance the simulated clock by days and hours."""
     if settings.IS_PRODUCTION or not settings.SIM_MODE:
         raise HTTPException(status_code=403, detail="Simulation tick not allowed in production (SIM_DISABLED)")
-    if days < 1 or days > 365:
-        raise HTTPException(status_code=422, detail="days must be between 1 and 365")
+    if days < 0 or days > 365 or hours < 0 or hours > 23 or days + hours == 0:
+        raise HTTPException(
+            status_code=422,
+            detail="Use days between 0 and 365 and hours between 0 and 23; total advance must be positive",
+        )
 
-    clock.tick(days)
+    clock.tick(days, hours)
     return SimTickOut(
-        clock=str(clock.now().date()),
+        clock=clock.now().isoformat(),
         drafts_created=0,
         alerts_raised=0,
     )

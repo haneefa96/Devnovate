@@ -12,7 +12,7 @@ Tests for FastAPI application and API foundation:
 """
 
 import io
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.pool import StaticPool
@@ -96,6 +96,8 @@ def test_documented_api_routes_are_registered():
         ("POST", "/api/invoices/{invoice_id}/send"),
         ("GET", "/api/actions"),
         ("POST", "/api/actions/{action_id}/approve"),
+        ("GET", "/api/actions/{action_id}/handoff"),
+        ("POST", "/api/actions/{action_id}/confirm-delivery"),
         ("POST", "/api/actions/{action_id}/reject"),
         ("GET", "/api/actions/{action_id}/explain"),
         ("POST", "/api/messages/inbound"),
@@ -261,6 +263,8 @@ def test_create_invoice_and_readiness(client):
         "due_date": "2026-03-31",
         "amount_paise": 4820000,
         "po_number": "PO-99",
+        "invoice_gstin": "36FGHIJ1234K5Z6",
+        "po_amount_paise": 4820000,
     }
     r = client.post("/api/invoices", json=payload)
     assert r.status_code == 201
@@ -268,6 +272,8 @@ def test_create_invoice_and_readiness(client):
     assert data["status"] == "DRAFT"
     assert "readiness" in data
     assert "findings" in data
+    assert data["invoice_gstin"] == payload["invoice_gstin"]
+    assert data["po_amount_paise"] == payload["po_amount_paise"]
     inv_id = data["id"]
 
     # Re-run check
@@ -344,10 +350,72 @@ def test_actions_workflow(client):
     assert r_reject.json()["status"] == "REJECTED"
 
 
+def test_approval_handoff_and_owner_confirmation_are_truthful(client, monkeypatch):
+    """Approval prepares a handoff; only an owner report marks it sent."""
+    local_time = datetime(2026, 1, 1, 10, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    monkeypatch.setattr(clock, "now", lambda: local_time)
+    action_id = client.get("/api/actions?status=DRAFTED").json()[0]["id"]
+
+    approved = client.post(f"/api/actions/{action_id}/approve", json={})
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+    assert approved.json()["sent_at"] is None
+    assert approved.json()["handoff_url"] == f"/api/actions/{action_id}/handoff"
+
+    handoff = client.get(
+        f"/api/actions/{action_id}/handoff",
+        follow_redirects=False,
+    )
+    assert handoff.status_code == 302
+    assert handoff.headers["location"].startswith("https://wa.me/")
+    opened = client.get("/api/actions?status=APPROVED").json()[0]
+    opened_at = datetime.fromisoformat(opened["handoff_opened_at"].replace("Z", "+00:00"))
+    assert opened_at.astimezone(local_time.tzinfo) == local_time
+
+    confirmed = client.post(
+        f"/api/actions/{action_id}/confirm-delivery",
+        json={"confirmed_by": "owner"},
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["status"] == "SENT"
+    assert confirmed.json()["delivery_confirmation_source"] == "OWNER_REPORTED"
+    assert confirmed.json()["provider_confirmed"] is False
+    assert client.post(
+        f"/api/actions/{action_id}/confirm-delivery",
+        json={"confirmed_by": "owner"},
+    ).status_code == 409
+
+
+def test_approval_without_contact_number_has_no_handoff(client):
+    """A missing contact number does not create a broken handoff URL."""
+    cleared = client.patch("/api/customers/1", json={"contact_phone": None})
+    assert cleared.status_code == 200
+    action_id = client.get("/api/actions?status=DRAFTED").json()[0]["id"]
+
+    approved = client.post(f"/api/actions/{action_id}/approve", json={})
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+    assert approved.json()["handoff_url"] is None
+    assert approved.json()["handoff_status"] == "NO_VALID_CONTACT_NUMBER"
+    assert client.get(f"/api/actions/{action_id}/handoff").status_code == 409
+
+
+def test_whatsapp_handoff_is_blocked_outside_contact_hours(client, monkeypatch):
+    """Owner approval cannot bypass the 09:00–19:00 IST contact window."""
+    after_hours = datetime(2026, 1, 1, 20, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+    monkeypatch.setattr(clock, "now", lambda: after_hours)
+    action_id = client.get("/api/actions?status=DRAFTED").json()[0]["id"]
+    assert client.post(f"/api/actions/{action_id}/approve", json={}).status_code == 200
+
+    handoff = client.get(f"/api/actions/{action_id}/handoff")
+    assert handoff.status_code == 409
+    assert "09:00 and 19:00 IST" in handoff.json()["error"]["message"]
+
+
 # ─── 7. Inbound Messages API ──────────────────────────────────────────────────
 
 def test_record_inbound_message(client):
-    """Test POST /api/messages/inbound stores reply and queues risk check."""
+    """Test POST /api/messages/inbound stores reply and performs risk assessment."""
     payload = {
         "customer_id": 1,
         "invoice_id": 1,
@@ -360,7 +428,8 @@ def test_record_inbound_message(client):
     data = r.json()
     assert "id" in data
     assert "memory_event_id" in data
-    assert data["risk_check_queued"] is True
+    assert data["risk_assessment_status"] == "COMPLETED"
+    assert data["risk_assessment_error"] is None
 
 
 # ─── 8. Payments API ──────────────────────────────────────────────────────────
@@ -378,6 +447,31 @@ def test_record_payment(client):
     data = r.json()
     assert data["invoice_status"] == "PAID"
     assert "days_late" in data
+
+
+def test_payment_commits_even_if_risk_assessment_fails(client, monkeypatch):
+    """A failed secondary assessment is reported without undoing a recorded payment."""
+    from munshi.agents.risk import RiskAgent
+
+    async def fail_assessment(self, session, payment_id):
+        raise RuntimeError("test-only failure")
+
+    monkeypatch.setattr(RiskAgent, "on_payment", fail_assessment)
+    before = client.get("/api/dashboard").json()["total_receivable_paise"]
+    response = client.post(
+        "/api/payments",
+        json={
+            "invoice_id": 2,
+            "amount_paise": 10000,
+            "paid_on": "2026-03-05",
+            "reference": "TEST-REF",
+        },
+    )
+    assert response.status_code == 201
+    assert response.json()["risk_assessment_status"] == "FAILED"
+    assert response.json()["risk_assessment_error"]
+    after = client.get("/api/dashboard").json()["total_receivable_paise"]
+    assert after == before - 10000
 
 
 # ─── 9. Risk Alerts API ───────────────────────────────────────────────────────
@@ -411,10 +505,61 @@ def test_explain_endpoint(client):
     assert "evidence" in data
 
 
+def test_customer_detail_returns_only_customer_scoped_memory(client, monkeypatch):
+    """Customer detail normalizes timestamps and excludes other customers' memories."""
+    from munshi.memory import queries as memory_queries
+
+    recalled_at = datetime(2026, 3, 5, 9, 30, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+
+    class FakeMemoryStore:
+        is_available = True
+
+        async def recall(self, **kwargs):
+            assert kwargs["customer_id"] == "1"
+            return [
+                {
+                    "id": "memory-1",
+                    "customer_id": "1",
+                    "timestamp": recalled_at,
+                    "content": "Pays after the 5th",
+                    "metadata": {"trend": "stable"},
+                },
+                {
+                    "id": "memory-2",
+                    "customer_id": "2",
+                    "timestamp": recalled_at,
+                    "content": "Another customer's private context",
+                    "metadata": {},
+                },
+            ]
+
+    async def fake_reflect(**kwargs):
+        assert kwargs["customer_id"] == "1"
+        return {"playbook": "Customer-scoped learned context"}
+
+    monkeypatch.setattr(memory_queries, "memory_store", FakeMemoryStore())
+    monkeypatch.setattr(memory_queries, "get_memory_for_collector", fake_reflect)
+    response = client.get("/api/customers/1")
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["memory_status"] == "AVAILABLE"
+    assert result["playbook"]["text"] == "Customer-scoped learned context"
+    assert [belief["text"] for belief in result["beliefs"]] == ["Pays after the 5th"]
+    assert result["beliefs"][0]["evidence"][0]["date"] == "2026-03-05"
+
+
 # ─── 11. Simulation Controls API ──────────────────────────────────────────────
 
 def test_simulation_controls(client):
-    """Test /api/sim/tick, /api/sim/inject, and /api/sim/reset."""
+    """Test day/hour clock advancement and the documented injection/reset routes."""
+    clock.reset()
+    r_hours = client.post("/api/sim/tick?days=0&hours=10")
+    assert r_hours.status_code == 200
+    assert "T10:00:00" in r_hours.json()["clock"]
+    assert client.post("/api/sim/tick?days=0&hours=0").status_code == 422
+    assert client.post("/api/sim/tick?days=0&hours=24").status_code == 422
+
     # Tick
     r_tick = client.post("/api/sim/tick?days=5")
     assert r_tick.status_code == 200

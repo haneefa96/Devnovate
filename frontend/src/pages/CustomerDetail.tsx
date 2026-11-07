@@ -19,7 +19,7 @@ export default function CustomerDetail() {
   if (customer.isPending) return <LoadingState label="Loading customer profile…" />
   if (customer.isError) return <ErrorNotice message={customer.error.message} retry={() => void customer.refetch()} />
 
-  const { customer: record, playbook, beliefs, timeline } = customer.data
+  const { customer: record, playbook, beliefs, timeline, outstanding_paise, memory_status } = customer.data
   const paymentHistory = timeline.filter((item) => item.kind === 'PAYMENT')
   const otherActivity = timeline.filter((item) => item.kind !== 'PAYMENT')
 
@@ -42,10 +42,16 @@ export default function CustomerDetail() {
               <Info label="Contact role" value={record.contact_role || 'Not recorded'} />
               <Info label="Purchase order" value={record.po_required ? 'Required' : 'Not required'} />
               <Info label="Required documents" value={record.required_docs.length ? record.required_docs.join(', ') : 'None recorded'} />
+              <Info label="Outstanding receivable" value={`₹${(outstanding_paise / 100).toLocaleString('en-IN', { minimumFractionDigits: 2 })}`} />
             </dl>
           </Panel>
 
-          <Panel title="Learned behaviour" subtitle="Customer knowledge from the memory service">
+          <Panel title="Learned behaviour" subtitle="Supplementary customer context; the SQLite ledger remains authoritative">
+            {memory_status === 'UNAVAILABLE' && (
+              <p role="status" className="border-b border-amber-100 bg-amber-50 px-5 py-3 text-xs text-amber-800">
+                Hindsight is unavailable. No conclusion about the absence of learned customer history can be drawn.
+              </p>
+            )}
             {playbook.text ? (
               <div className="p-5">
                 <p className="whitespace-pre-wrap text-sm leading-6 text-slate-600">{playbook.text}</p>
@@ -53,8 +59,8 @@ export default function CustomerDetail() {
               </div>
             ) : (
               <EmptyState
-                title={playbook.updating ? 'Memory is updating' : 'No learned behaviour yet'}
-                detail={playbook.updating ? 'The customer playbook and beliefs will appear when memory consolidation is available.' : 'No customer playbook has been returned by the backend.'}
+                title={memory_status === 'UNAVAILABLE' ? 'Learned behaviour unavailable' : playbook.updating ? 'Memory is updating' : 'No learned behaviour returned'}
+                detail={memory_status === 'UNAVAILABLE' ? 'Use ledger history below; unavailable memory is not evidence that the customer has no history.' : playbook.updating ? 'The customer playbook and beliefs will appear when memory consolidation is available.' : 'The memory service returned no customer playbook.'}
               />
             )}
             {beliefs.length > 0 && (

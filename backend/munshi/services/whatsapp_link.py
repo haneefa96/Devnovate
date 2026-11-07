@@ -6,6 +6,7 @@ This module generates WhatsApp links for message handoff.
 
 from typing import Optional
 from urllib.parse import quote
+import re
 
 
 def generate_whatsapp_link(
@@ -22,8 +23,11 @@ def generate_whatsapp_link(
     Returns:
         WhatsApp web link
     """
-    encoded_message = quote(message)
-    return f"https://wa.me/{phone}?text={encoded_message}"
+    phone_digits = re.sub(r"\D", "", phone)
+    if not 10 <= len(phone_digits) <= 15:
+        raise ValueError("A valid customer phone number is required for WhatsApp handoff")
+    encoded_message = quote(message, safe="")
+    return f"https://wa.me/{phone_digits}?text={encoded_message}"
 
 
 def get_whatsapp_link_for_draft(

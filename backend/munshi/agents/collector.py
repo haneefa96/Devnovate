@@ -33,6 +33,7 @@ from munshi.db.models import (
 from munshi.llm.groq_client import groq_client
 from munshi.memory import queries as memory_queries
 from munshi.memory.client import HindsightUnavailable
+from munshi.services.evidence import resolve_evidence
 
 logger = logging.getLogger(__name__)
 _PROMPT_PATH = Path(__file__).parent / "prompts" / "collector.md"
@@ -64,6 +65,7 @@ class CollectorAgent(BasePolicy):
         invoice_id: int,
         customer_id: int,
         timing: datetime,
+        dedupe_key: str | None = None,
     ) -> dict[str, Any]:
         """Create and persist a reminder draft; posting it never sends the message."""
         invoice = session.get(Invoice, invoice_id)
@@ -82,6 +84,10 @@ class CollectorAgent(BasePolicy):
         customer.business = business
 
         now = clock.now()
+        if dedupe_key and session.exec(
+            select(Action.id).where(Action.dedupe_key == dedupe_key)
+        ).first():
+            raise ValueError("Collection event already has a draft")
         if invoice.status in (InvoiceStatus.PAID, InvoiceStatus.WRITTEN_OFF):
             raise ValueError(f"Cannot create a reminder for invoice with status {invoice.status.value}")
 
@@ -122,6 +128,7 @@ class CollectorAgent(BasePolicy):
             requested_time = clamp_contact_time(max(requested_time, after_promise), now)
 
         memory_available = memory_queries.memory_store.is_available
+        memory_unavailable = not memory_available
         reflect: dict[str, Any] = {}
         recalled: list[dict[str, Any]] = []
         if memory_available:
@@ -138,6 +145,7 @@ class CollectorAgent(BasePolicy):
                     k=10,
                 )
             except HindsightUnavailable:
+                memory_unavailable = True
                 logger.warning("Collector memory service unavailable for customer %s", customer_id)
         recalled = [
             event for event in recalled if _belongs_to_customer(event, customer_id)
@@ -156,6 +164,12 @@ class CollectorAgent(BasePolicy):
 
         reason = _ledger_reason(invoice, payments, promises)
         memory_supported = bool(memory_available and memory_evidence_ids)
+        if memory_unavailable:
+            reason += " Hindsight was unavailable; this draft uses SQLite ledger evidence only."
+        elif not memory_evidence_ids:
+            reason += " No customer-scoped learned evidence was returned; this draft uses ledger evidence only."
+        else:
+            reason += " Customer-scoped learned evidence was available for context."
         wording = await self._draft_wording(
             customer=customer,
             invoice=invoice,
@@ -208,7 +222,10 @@ class CollectorAgent(BasePolicy):
             channel=plan.channel,
             recipient=plan.recipient,
             body=plan.body,
+            reason=plan.reason,
             attachments=plan.attachments,
+            evidence=resolve_evidence(session, evidence_ids),
+            dedupe_key=dedupe_key,
             planned_for=plan.send_on,
             status=ActionStatus.DRAFTED,
             created_at=now,
@@ -339,11 +356,17 @@ class CollectorAgent(BasePolicy):
         invoices = session.exec(
             select(Invoice)
             .where(Invoice.due_date <= cutoff)
-            .where(Invoice.status.not_in([InvoiceStatus.PAID, InvoiceStatus.WRITTEN_OFF]))
+            .where(Invoice.status.in_([
+                InvoiceStatus.SENT,
+                InvoiceStatus.PARTLY_PAID,
+                InvoiceStatus.DISPUTED,
+            ]))
             .order_by(Invoice.due_date, Invoice.id)
+            .limit(100)
         ).all()
         drafts = []
         for invoice in invoices:
+            dedupe_key = f"collector:daily:{invoice.id}:{date.date().isoformat()}"
             try:
                 drafts.append(
                     await self.create_draft(
@@ -351,10 +374,14 @@ class CollectorAgent(BasePolicy):
                         invoice.id,
                         invoice.customer_id,
                         date,
+                        dedupe_key=dedupe_key,
                     )
                 )
             except ValueError as error:
-                if str(error).startswith("Reminder limit reached"):
+                if str(error).startswith((
+                    "Reminder limit reached",
+                    "Collection event already has a draft",
+                )):
                     logger.info("Skipping invoice %s: %s", invoice.id, error)
                     continue
                 raise

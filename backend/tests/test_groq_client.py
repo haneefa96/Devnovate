@@ -160,8 +160,6 @@ class TestChatCompletion:
         from munshi.llm.groq_client import get_groq_client
         
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}):
-            client = get_groq_client()
-            
             # Mock the Groq client
             mock_groq = MagicMock()
             mock_response = MagicMock()
@@ -175,6 +173,7 @@ class TestChatCompletion:
             mock_groq.chat.completions.create.return_value = mock_response
             
             with patch('munshi.llm.groq_client.Groq', return_value=mock_groq):
+                client = get_groq_client()
                 result = await client.create_chat_completion(
                     model='openai/gpt-oss-120b',
                     messages=[{'role': 'user', 'content': 'Test'}],
@@ -193,8 +192,6 @@ class TestChatCompletion:
             confidence: float
         
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}):
-            client = get_groq_client()
-            
             mock_groq = MagicMock()
             mock_response = MagicMock()
             mock_response.choices = [MagicMock()]
@@ -207,6 +204,7 @@ class TestChatCompletion:
             mock_groq.chat.completions.create.return_value = mock_response
             
             with patch('munshi.llm.groq_client.Groq', return_value=mock_groq):
+                client = get_groq_client()
                 result = await client.create_chat_completion(
                     model='openai/gpt-oss-120b',
                     messages=[{'role': 'user', 'content': 'Test'}],
@@ -241,8 +239,6 @@ class TestChatCompletion:
         from munshi.llm.groq_client import get_groq_client
         
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}):
-            client = get_groq_client()
-            
             mock_groq = MagicMock()
             mock_response = MagicMock()
             mock_response.choices = [MagicMock()]
@@ -258,6 +254,7 @@ class TestChatCompletion:
             mock_groq.chat.completions.create.return_value = mock_response
             
             with patch('munshi.llm.groq_client.Groq', return_value=mock_groq):
+                client = get_groq_client()
                 await client.create_chat_completion(
                     model='openai/gpt-oss-120b',
                     messages=[{'role': 'user', 'content': 'Test'}],
@@ -271,8 +268,6 @@ class TestChatCompletion:
         from munshi.llm.groq_client import get_groq_client
         
         with patch.dict('os.environ', {'GROQ_API_KEY': 'test-key'}):
-            client = get_groq_client()
-            
             mock_groq = MagicMock()
             mock_response = MagicMock()
             mock_response.choices = [MagicMock()]
@@ -285,6 +280,7 @@ class TestChatCompletion:
             mock_groq.chat.completions.create.return_value = mock_response
             
             with patch('munshi.llm.groq_client.Groq', return_value=mock_groq):
+                client = get_groq_client()
                 with patch('asyncio.sleep', AsyncMock()):
                     result = await client.create_chat_completion(
                         model='openai/gpt-oss-120b',

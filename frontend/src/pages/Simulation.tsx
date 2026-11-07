@@ -14,6 +14,7 @@ export default function Simulation() {
     refetchInterval: 3000,
   })
   const [days, setDays] = useState('1')
+  const [hours, setHours] = useState('0')
   const [customerId, setCustomerId] = useState('')
   const [eventType, setEventType] = useState<(typeof eventTypes)[number]>('CONTACT_CHANGE')
   const [payloadText, setPayloadText] = useState('{}')
@@ -31,7 +32,7 @@ export default function Simulation() {
     },
   })
   const tick = useMutation({
-    mutationFn: () => advanceSimulation(Number(days)),
+    mutationFn: () => advanceSimulation(Number(days), Number(hours)),
     onSuccess: (result: SimulationTickResult) => {
       setClock(result.clock)
       setMessage(`Simulation advanced. ${result.drafts_created} drafts created · ${result.alerts_raised} alerts raised.`)
@@ -86,18 +87,31 @@ export default function Simulation() {
         <Panel title="Simulation clock" subtitle="Simulation controls are available only when the backend enables SIM_MODE.">
           <div className="p-5 sm:p-6">
             <div className="rounded-xl bg-slate-50 p-5">
-              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Current simulated date</p>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Current simulated time (IST)</p>
               <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-800">{clock ?? 'Not available yet'}</p>
               {!clock && <p className="mt-1 text-xs text-slate-400">Reset or advance the clock to receive its current value.</p>}
             </div>
-            <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_auto]">
+            <div className="mt-5 grid gap-3 sm:grid-cols-[1fr_1fr_auto]">
               <label className="text-xs font-medium text-slate-600">
                 Advance by days
-                <input type="number" min={1} max={365} value={days} onChange={(event) => setDays(event.target.value)} className="field-control mt-1.5" />
+                <input type="number" min={0} max={365} value={days} onChange={(event) => setDays(event.target.value)} className="field-control mt-1.5" />
+              </label>
+              <label className="text-xs font-medium text-slate-600">
+                Advance by hours
+                <input type="number" min={0} max={23} value={hours} onChange={(event) => setHours(event.target.value)} className="field-control mt-1.5" />
               </label>
               <Button
                 className="self-end"
-                disabled={isPending || !Number.isInteger(Number(days)) || Number(days) < 1 || Number(days) > 365}
+                disabled={
+                  isPending
+                  || !Number.isInteger(Number(days))
+                  || Number(days) < 0
+                  || Number(days) > 365
+                  || !Number.isInteger(Number(hours))
+                  || Number(hours) < 0
+                  || Number(hours) > 23
+                  || (Number(days) === 0 && Number(hours) === 0)
+                }
                 onClick={() => { setMessage(null); tick.mutate() }}
               >
                 {tick.isPending ? 'Advancing…' : 'Advance time'}

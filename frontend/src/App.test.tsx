@@ -5,6 +5,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import * as api from './api/client'
+import type { ActionDraft } from './types'
 
 vi.mock('./api/client', () => ({
   fetchDashboard: vi.fn(),
@@ -71,6 +72,8 @@ beforeEach(() => {
     playbook: { text: '', updating: true },
     beliefs: [],
     timeline: [{ date: '2026-03-05', kind: 'PAYMENT', text: 'Payment received' }],
+    outstanding_paise: 0,
+    memory_status: 'AVAILABLE',
   })
   vi.mocked(api.fetchActions).mockResolvedValue([])
   vi.mocked(api.fetchRiskAlerts).mockResolvedValue([])
@@ -157,7 +160,7 @@ describe('application screens', () => {
 
   it('submits the edited message through the owner approval endpoint', async () => {
     const user = userEvent.setup()
-    vi.mocked(api.fetchActions).mockResolvedValue([{
+    const draft: ActionDraft = {
       id: 3,
       invoice_id: 10,
       customer: 'Reddy Traders',
@@ -169,8 +172,23 @@ describe('application screens', () => {
       attachments: [],
       status: 'DRAFTED',
       why: 'Invoice is due soon.',
-    }])
-    vi.mocked(api.approveAction).mockResolvedValue({ id: 3, status: 'SENT' })
+      evidence: [],
+      handoff_url: null,
+      handoff_opened_at: null,
+      delivery_confirmation_source: null,
+    }
+    vi.mocked(api.fetchActions).mockImplementation(async (status = 'DRAFTED') =>
+      status === 'DRAFTED' ? [draft] : [],
+    )
+    vi.mocked(api.approveAction).mockResolvedValue({
+      id: 3,
+      status: 'APPROVED',
+      sent_at: null,
+      handoff_url: '/api/actions/3/handoff',
+      whatsapp_link: null,
+      memory_event_id: null,
+      handoff_status: 'READY_FOR_HANDOFF',
+    })
     renderApp('/approvals')
     await user.click(await screen.findByRole('button', { name: 'Edit' }))
     await user.clear(screen.getByRole('textbox', { name: 'Edit draft 3' }))
@@ -182,6 +200,7 @@ describe('application screens', () => {
   it('renders simulation controls and customer event fields', async () => {
     renderApp('/simulation')
     expect(await screen.findByText('Simulation clock')).toBeInTheDocument()
+    expect(screen.getByLabelText('Advance by hours')).toBeInTheDocument()
     expect(await screen.findByLabelText('Event type')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Advance time' })).toBeInTheDocument()
   })
@@ -196,6 +215,7 @@ describe('application screens', () => {
       signals: ['Two missed payment runs'],
       suggestion: 'Review recent payment history.',
       evidence: [],
+      memory_status: 'AVAILABLE',
       status: 'OPEN',
       created_at: '2026-03-05T10:00:00+05:30',
     }])
@@ -207,6 +227,7 @@ describe('application screens', () => {
       signals: ['Two missed payment runs'],
       suggestion: 'Review recent payment history.',
       evidence: [],
+      memory_status: 'AVAILABLE',
       status: 'ACKNOWLEDGED',
       created_at: '2026-03-05T10:00:00+05:30',
     })

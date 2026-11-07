@@ -94,6 +94,7 @@ class RiskAssessment(StrictModel):
     signals: list[RiskSignal] = Field(default_factory=list)
     suggestion: str | None = None
     evidence_ids: list[str] = Field(default_factory=list)
+    memory_status: Literal["AVAILABLE", "UNAVAILABLE"] = "UNAVAILABLE"
     owner_decision_required: Literal[True] = True
 
     @field_validator("evidence_ids")

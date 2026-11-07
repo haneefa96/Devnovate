@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, fetchDashboard } from './client'
+import { advanceSimulation, ApiError, fetchDashboard } from './client'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -21,6 +21,20 @@ describe('API client', () => {
       pending_drafts: 1,
     })
     expect(fetchMock).toHaveBeenCalledWith('/api/dashboard', undefined)
+  })
+
+  it('advances simulated time by hours without changing the route contract', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      clock: '2026-01-01T10:00:00+05:30',
+      drafts_created: 0,
+      alerts_raised: 0,
+    }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(advanceSimulation(0, 10)).resolves.toMatchObject({
+      clock: '2026-01-01T10:00:00+05:30',
+    })
+    expect(fetchMock).toHaveBeenCalledWith('/api/sim/tick?days=0&hours=10', { method: 'POST' })
   })
 
   it('surfaces FastAPI validation details as a readable error', async () => {

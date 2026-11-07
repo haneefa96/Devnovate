@@ -21,6 +21,7 @@ from munshi.db.models import (
     DocType,
     InvoiceReadiness,
     InvoiceStatus,
+    MemoryStatus,
     RiskAlertStatus,
     SimArm,
 )
@@ -127,6 +128,8 @@ class CustomerDetailOut(BaseModel):
     playbook: CustomerPlaybookOut        = Field(default_factory=CustomerPlaybookOut)
     beliefs:  List[CustomerBeliefOut]    = Field(default_factory=list)
     timeline: List[CustomerTimelineItem] = Field(default_factory=list)
+    outstanding_paise: int = 0
+    memory_status: MemoryStatus = MemoryStatus.UNAVAILABLE
 
 
 class CustomerOut(BaseModel):
@@ -180,6 +183,8 @@ class InvoiceCreate(BaseModel):
     due_date:     date
     amount_paise: int           = Field(..., gt=0, description="Amount in integer paise")
     po_number:    Optional[str] = None
+    invoice_gstin: Optional[str] = Field(default=None, max_length=15)
+    po_amount_paise: Optional[int] = Field(default=None, gt=0, description="PO amount in integer paise")
 
     @field_validator("due_date")
     @classmethod
@@ -195,6 +200,8 @@ class InvoiceCreateOut(BaseModel):
     status:    InvoiceStatus
     readiness: Optional[InvoiceReadiness] = None
     findings:  List[Finding]              = Field(default_factory=list)
+    invoice_gstin: Optional[str] = None
+    po_amount_paise: Optional[int] = None
 
 
 class InvoiceCheckOut(BaseModel):
@@ -254,19 +261,45 @@ class ActionOut(BaseModel):
     attachments: List[str] = Field(default_factory=list)
     status:      ActionStatus
     why:         str
+    evidence:    List[Evidence] = Field(default_factory=list)
+    handoff_url: Optional[str] = None
+    handoff_opened_at: Optional[datetime] = None
+    delivery_confirmation_source: Optional[str] = None
+    delivery_confirmed_by: Optional[str] = None
 
 
 class ApproveActionIn(BaseModel):
-    edited_body: Optional[str] = None
+    edited_body: Optional[str] = Field(default=None, min_length=1, max_length=5000)
     decided_by:  str           = Field(default="owner", max_length=255)
 
 
 class ApproveActionOut(BaseModel):
     id:              int
-    status:          ActionStatus = ActionStatus.SENT
+    status:          ActionStatus = ActionStatus.APPROVED
     sent_at:         Optional[datetime] = None
     whatsapp_link:   Optional[str] = None
+    handoff_url:     Optional[str] = None
     memory_event_id: Optional[str] = None
+    handoff_status:  str = "READY_FOR_HANDOFF"
+
+
+class HandoffOpenedOut(BaseModel):
+    id: int
+    status: ActionStatus
+    handoff_opened_at: datetime
+    whatsapp_link: str
+
+
+class ConfirmDeliveryIn(BaseModel):
+    confirmed_by: str = Field(..., min_length=1, max_length=255)
+
+
+class ConfirmDeliveryOut(BaseModel):
+    id: int
+    status: ActionStatus
+    sent_at: datetime
+    delivery_confirmation_source: Literal["OWNER_REPORTED"]
+    provider_confirmed: Literal[False] = False
 
 
 class RejectActionIn(BaseModel):
@@ -299,7 +332,9 @@ class InboundMessageCreate(BaseModel):
 class InboundMessageOut(BaseModel):
     id:                int
     memory_event_id:   Optional[str] = None
-    risk_check_queued: bool = True
+    risk_assessment_status: Literal["COMPLETED", "FAILED"]
+    risk_assessment_error: Optional[str] = None
+    risk_level: Optional[CustomerRiskLevel] = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -317,6 +352,9 @@ class PaymentOut(BaseModel):
     id:             int
     invoice_status: InvoiceStatus
     days_late:      int = 0
+    risk_assessment_status: Literal["COMPLETED", "FAILED"] = "COMPLETED"
+    risk_assessment_error: Optional[str] = None
+    risk_level: Optional[CustomerRiskLevel] = None
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -331,6 +369,7 @@ class RiskAlertOut(BaseModel):
     signals:     List[str]         = Field(default_factory=list)
     suggestion:  Optional[str]     = None
     evidence:    List[dict]        = Field(default_factory=list)
+    memory_status: MemoryStatus = MemoryStatus.UNAVAILABLE
     status:      RiskAlertStatus   = RiskAlertStatus.OPEN
     created_at:  datetime
 
@@ -371,6 +410,7 @@ class ExplainIn(BaseModel):
 class ExplainOut(BaseModel):
     answer:   str
     evidence: List[Evidence] = Field(default_factory=list)
+    memory_status: MemoryStatus = MemoryStatus.UNAVAILABLE
 
 
 # ──────────────────────────────────────────────────────────────────

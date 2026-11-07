@@ -8,7 +8,7 @@ Sessions are created per-request via get_session().
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Session, SQLModel, create_engine
@@ -78,8 +78,49 @@ def session_scope(target_engine: Engine | None = None) -> Generator[Session, Non
 
 
 def init_db(target_engine: Engine | None = None) -> None:
-    """Create all tables (idempotent — safe to call on startup)."""
-    SQLModel.metadata.create_all(bind=target_engine or engine)
+    """Create tables and apply safe, additive SQLite columns for existing local DBs."""
+    eng = target_engine or engine
+    SQLModel.metadata.create_all(bind=eng)
+    if eng.dialect.name != "sqlite":
+        return
+
+    additions = {
+        "invoice": {
+            "invoice_gstin": "VARCHAR(15)",
+            "po_amount_paise": "INTEGER",
+        },
+        "action": {
+            "evidence": "JSON NOT NULL DEFAULT '[]'",
+            "reason": "TEXT NOT NULL DEFAULT ''",
+            "dedupe_key": "VARCHAR(200)",
+            "handoff_opened_at": "DATETIME",
+            "delivery_confirmation_source": "VARCHAR(30)",
+            "delivery_confirmed_by": "VARCHAR(255)",
+        },
+        "risk_alert": {
+            "memory_status": "VARCHAR(20) NOT NULL DEFAULT 'UNAVAILABLE'",
+        },
+    }
+    with eng.begin() as connection:
+        for table_name, columns in additions.items():
+            existing_columns = {
+                column["name"]
+                for column in inspect(connection).get_columns(table_name)
+            }
+            for column_name, column_type in columns.items():
+                if column_name not in existing_columns:
+                    connection.execute(
+                        text(
+                            f'ALTER TABLE "{table_name}" ADD COLUMN '
+                            f'"{column_name}" {column_type}'
+                        )
+                    )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS ix_action_dedupe_key "
+                "ON action (dedupe_key)"
+            )
+        )
 
 
 def reset_db(target_engine: Engine | None = None) -> None:

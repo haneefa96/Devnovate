@@ -74,15 +74,19 @@ async def lifespan(_: FastAPI):
     logger.info("Database tables initialized successfully")
     from munshi.memory.client import get_hindsight_client
     from munshi.memory.outbox import outbox_processor
+    from munshi.services.daily_loop import daily_loop
 
     outbox_task = asyncio.create_task(outbox_processor.start())
+    daily_task = asyncio.create_task(daily_loop.run())
     try:
         yield
     finally:
         await outbox_processor.stop()
+        await daily_loop.stop()
         outbox_task.cancel()
+        daily_task.cancel()
         try:
-            await outbox_task
+            await asyncio.gather(outbox_task, daily_task)
         except asyncio.CancelledError:
             pass
         await get_hindsight_client().aclose()

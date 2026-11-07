@@ -88,6 +88,11 @@ class RiskAlertStatus(str, Enum):
     DISMISSED    = "DISMISSED"
 
 
+class MemoryStatus(str, Enum):
+    AVAILABLE = "AVAILABLE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 class SimArm(str, Enum):
     A = "A"   # Fixed (no memory)
     B = "B"   # Structured (SQLite-only)
@@ -164,6 +169,10 @@ class Invoice(SQLModel, table=True):
     __table_args__ = (
         UniqueConstraint("customer_id", "number", name="uq_invoice_customer_number"),
         CheckConstraint("amount_paise > 0", name="ck_invoice_amount_paise_positive"),
+        CheckConstraint(
+            "po_amount_paise IS NULL OR po_amount_paise > 0",
+            name="ck_invoice_po_amount_paise_positive",
+        ),
         CheckConstraint("due_date >= issue_date", name="ck_invoice_due_date_after_issue_date"),
         _enum_check("status", InvoiceStatus, "ck_invoice_status"),
         _enum_check("readiness", InvoiceReadiness, "ck_invoice_readiness"),
@@ -180,6 +189,8 @@ class Invoice(SQLModel, table=True):
     # Amounts stored as integer paise — never as float
     amount_paise: int                        = Field(..., gt=0)
     po_number:    Optional[str]              = Field(default=None, max_length=100)
+    invoice_gstin: Optional[str]             = Field(default=None, max_length=15)
+    po_amount_paise: Optional[int]           = Field(default=None, gt=0)
     status:       InvoiceStatus              = Field(default=InvoiceStatus.DRAFT)
     readiness:    Optional[InvoiceReadiness] = Field(default=None)
     created_at:   datetime                   = Field(default_factory=_now)
@@ -245,6 +256,7 @@ class Action(SQLModel, table=True):
         Index("ix_action_status", "status"),
         Index("ix_action_customer_id", "customer_id"),
         Index("ix_action_invoice_id", "invoice_id"),
+        Index("ix_action_dedupe_key", "dedupe_key", unique=True),
     )
 
     id:              Optional[int]      = Field(default=None, primary_key=True)
@@ -254,12 +266,18 @@ class Action(SQLModel, table=True):
     channel:         str                = Field(..., max_length=50)  # WHATSAPP | EMAIL | PHONE
     recipient:       str                = Field(..., max_length=255)
     body:            str                = Field(..., sa_column=Column(Text))
+    reason:          str                = Field(default="", sa_column=Column(Text, nullable=False))
     attachments:     List[str]          = Field(default_factory=list, sa_column=Column(JSON))
+    evidence:        List[dict]         = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
+    dedupe_key:      Optional[str]      = Field(default=None, max_length=200)
     planned_for:     Optional[datetime] = Field(default=None)
     status:          ActionStatus       = Field(default=ActionStatus.DRAFTED)
     decided_by:      Optional[str]      = Field(default=None, max_length=255)
     decided_at:      Optional[datetime] = Field(default=None)
     sent_at:         Optional[datetime] = Field(default=None)
+    handoff_opened_at: Optional[datetime] = Field(default=None)
+    delivery_confirmation_source: Optional[str] = Field(default=None, max_length=30)
+    delivery_confirmed_by: Optional[str] = Field(default=None, max_length=255)
     memory_event_id: Optional[str]      = Field(default=None, max_length=100)
     created_at:      datetime           = Field(default_factory=_now)
 
@@ -347,6 +365,7 @@ class RiskAlert(SQLModel, table=True):
         _enum_check("from_level", CustomerRiskLevel, "ck_risk_alert_from_level"),
         _enum_check("to_level", CustomerRiskLevel, "ck_risk_alert_to_level"),
         _enum_check("status", RiskAlertStatus, "ck_risk_alert_status"),
+        _enum_check("memory_status", MemoryStatus, "ck_risk_alert_memory_status"),
         Index("ix_risk_alert_customer_id", "customer_id"),
         Index("ix_risk_alert_status", "status"),
         Index("ix_risk_alert_created_at", "created_at"),
@@ -359,6 +378,7 @@ class RiskAlert(SQLModel, table=True):
     signals:     List[str]         = Field(default_factory=list, sa_column=Column(JSON))
     suggestion:  Optional[str]     = Field(default=None, max_length=500)
     evidence:    List[dict]        = Field(default_factory=list, sa_column=Column(JSON))
+    memory_status: MemoryStatus    = Field(default=MemoryStatus.UNAVAILABLE)
     status:      RiskAlertStatus   = Field(default=RiskAlertStatus.OPEN)
     created_at:  datetime          = Field(default_factory=_now)
 

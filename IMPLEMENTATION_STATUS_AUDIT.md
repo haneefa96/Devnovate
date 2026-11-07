@@ -1,7 +1,7 @@
 # Munshi Implementation Status Audit
 
 **Audit date:** 2026-11-07  
-**Scope:** Current implementation, external configuration, focused live checks, backend and frontend tests, and deployment files. Prompt 1 made documentation-only changes. Prompt 2 repaired the existing Hindsight adapter/outbox without changing database schema or credentials.
+**Scope:** Current implementation, external configuration, focused live checks, backend and frontend tests, and deployment files. Prompt 2 repaired the existing Hindsight adapter/outbox. Prompt 3 connected the existing Collector/Risk logic to operational workflows and aligned API/UI states.
 
 The original PDF project document is present, but local PDF text extraction tools were unavailable and the file viewer exposed compressed PDF data rather than readable text. Its Markdown companion `PROJECT_ANALYSIS.md` and the available Markdown specifications were inspected; the PDF's full text was not independently verified.
 
@@ -14,6 +14,16 @@ The original PDF project document is present, but local PDF text extraction tool
 - **NOT IMPLEMENTED** — no implementation was found.
 - **BLOCKED BY CREDENTIALS OR EXTERNAL DEPENDENCY** — work depends on missing credentials, an SDK, or an external service.
 
+## Current status after Prompt 3
+
+The Prompt 3 workflow changes are implemented and covered by focused mocked/local tests. Collector runs from a bounded lifecycle-managed daily loop; payment and inbound-message writes trigger Risk assessments after the SQLite commit. Daily drafts are deduplicated and carry persisted rationale/evidence. Payment-adjusted outstanding balances are used in dashboard/customer summaries. Invoice create and the frontend form now pass invoice GSTIN and PO amount into the existing readiness checks.
+
+Approval, handoff, and delivery reporting are distinct: approval leaves an action `APPROVED` or `EDITED`; a guarded 09:00–19:00 IST WhatsApp handoff only opens a prefilled link; `SENT` is recorded only after the owner reports sending, and the API explicitly marks provider delivery unverified. Assessment failures are returned explicitly without undoing committed ledger writes. Hindsight availability is shown distinctly from empty memory.
+
+The existing simulation clock can now advance by hours as well as days so the demo can reach a planned contact time. This does not connect the simulation world/injection engine or start the later evaluation stage. Band room delivery remains unavailable; web approval is the operative path. No authentication or automatic message sending was added.
+
+Latest verified results: **316 passed, 1 failed, 2 skipped** in the backend suite; the only failure is the existing playbook-title assertion (`test_parse_playbook_json` expects “Payment Collection” while the parser returns “Payment Collection Playbook”). Frontend: **14 passed** and production build passed. Two Hindsight live integration tests were skipped in the normal test mode; no live Groq or Hindsight request was made for Prompt 3.
+
 ## 1. Executive summary
 
 Munshi is a working local prototype, not an empty skeleton. It has a SQLModel/SQLite ledger with all twelve documented entities, seeded demo records, FastAPI routes, tested readiness rules, standalone Collector and Risk logic, a deterministic simulation engine, evaluation code, and seven React screens.
@@ -21,12 +31,11 @@ Munshi is a working local prototype, not an empty skeleton. It has a SQLModel/SQ
 It is **not yet an end-to-end collections application**. The most important gaps are:
 
 - The database is local SQLite, not Supabase; this is intentional for the current stage. The seeded demo data is hard-coded in Python and persisted in SQLite.
-- Most documented REST routes exist and use SQLite, but several return fixed or incomplete results. The simulation HTTP routes do not execute the existing simulation engine.
-- Collector and Risk implementations have unit tests, but no ordinary API or scheduled workflow invokes them. The daily loop is unfinished.
+- Core Collector/Risk workflows now have normal triggers and a bounded daily worker. The existing deterministic simulation world and event-injection engine remain disconnected from the simulation HTTP routes.
 - Hindsight Cloud is now verified through Munshi's wrapper using the installed `hindsight-client` 1.2.0 in the active backend Python 3.11.9 environment. Synthetic Cloud tests verified bank create/access, retain, recall, reflect, metadata/timestamp handling, customer and business-bank isolation, and outbox processing.
 - A real Groq request succeeded using `openai/gpt-oss-120b`. The configured `qwen/qwen3-32b` customer model was not present in the model list returned during this audit.
 - Band is not connected: credentials are absent, the SDK is not installed, and the bridge only logs what it would post.
-- The current backend full suite has **306 passed, 6 failed, and 2 skipped**. Its six failures are the same five pre-existing Groq mock-patching failures and playbook-title assertion documented in the baseline. Frontend tests and production build pass; frontend lint fails because there is no ESLint configuration.
+- The latest backend full suite has **316 passed, 1 failed, and 2 skipped**; the single failure is the pre-existing playbook-title mismatch. Frontend tests and production build pass; frontend lint remains unavailable because there is no ESLint configuration.
 - The project has its own Git repository and origin; current generated test/upload artifacts and a pre-existing `.gitignore` edit remain in the worktree and should be reviewed separately before staging.
 
 Prompt 2 implementation and verification details are in section 8.
@@ -97,10 +106,10 @@ The README, Makefile, and Dockerfile assume `uv`, although the active backend en
 | Demo seed | **COMPLETE AND VERIFIED** | Seed values are fictional literals in `backend/munshi/db/seed.py` and are stored in SQLite. |
 | FastAPI app, health, CORS, error handling | **COMPLETE AND VERIFIED** | TestClient coverage passes; a temporary Uvicorn process started and `GET /health` returned HTTP 200. |
 | Documented API route registration | **COMPLETE AND VERIFIED** | A test compares the registered `/api` methods and paths to the API contract. |
-| CRUD and financial API behavior | **PARTIALLY IMPLEMENTED** | Many handlers write/read SQLite; some workflows are incomplete or return generic data, as detailed in the API table below. |
+| Ledger and workflow API behavior | **PARTIALLY IMPLEMENTED** | Payment-adjusted balances, invoice GSTIN/PO fields, evidence-backed action outputs, event-triggered Risk assessments, and truthful approval/handoff states are implemented. Band transport, the simulator world/injection engine, and evaluation persistence remain incomplete. |
 | Authentication/authorization | **NOT IMPLEMENTED** | Consistent with the single-demo prototype scope, but not safe for multi-user deployment. |
 | Database migrations | **NOT IMPLEMENTED** | No Alembic or other migration history; existing schemas are not upgraded by `create_all`. |
-| Daily loop | **PLACEHOLDER / MOCK** | `daily_loop.py` contains a TODO for the day’s work and is not started by FastAPI. |
+| Daily loop | **COMPLETE AND VERIFIED for bounded workflow** | FastAPI lifespan starts/stops a single local worker. It performs daily Collector and Risk passes; the loop is bounded to one customer batch per pass and logs failures without stopping the application. |
 | Hindsight outbox lifecycle | **COMPLETE AND VERIFIED for the Prompt 2 scope** | FastAPI lifespan starts/stops the processor; tests cover persistence, retries, duplicate prevention, and confirmed-success status. |
 
 ## 5. Frontend implementation status
@@ -109,12 +118,12 @@ All seven documented screens exist and render in tests. API requests are central
 
 | Screen | Status | Actual behavior and limitation |
 |---|---|---|
-| Dashboard | **PARTIALLY IMPLEMENTED** | Reads the SQLite-backed summary API. Receivable and overdue values sum invoice face values and do not subtract payments. |
-| Customer | **PARTIALLY IMPLEMENTED** | Reads customer data and ledger timeline. The API always supplies an empty playbook, `updating: true`, and no beliefs. |
-| New Invoice / Readiness | **PARTIALLY IMPLEMENTED** | Creates invoices, uploads documents, and requests readiness checks. The form cannot supply invoice GSTIN or PO amount. |
-| Approvals Inbox | **PARTIALLY IMPLEMENTED** | Lists and edits/approves/rejects drafts. The API returns generic “why” text and no supporting evidence; approval is recorded as sent without delivery. |
-| Risk Alerts | **PARTIALLY IMPLEMENTED** | Reads persisted alerts and sends acknowledgement/dismissal decisions; the screen does not initiate a risk assessment. |
-| Simulation Console | **PARTIALLY IMPLEMENTED** | Calls reset/tick/inject routes, but tick only advances the clock and inject does not apply the event to the simulation. |
+| Dashboard | **COMPLETE AND VERIFIED for ledger balances** | Reads SQLite-backed totals and subtracts recorded payments from outstanding/overdue balances. |
+| Customer | **PARTIALLY IMPLEMENTED** | Reads ledger history and customer-scoped Hindsight playbook/beliefs when available; exposes memory unavailable separately and reports outstanding balance. |
+| New Invoice / Readiness | **COMPLETE AND VERIFIED for available R3/R6 inputs** | Creates invoices, uploads documents, requests readiness checks, and accepts invoice GSTIN/PO amount. IRN still has no dedicated data field. |
+| Approvals Inbox | **COMPLETE AND VERIFIED for manual approval/handoff states** | Shows persisted rationale/evidence; approval does not send. Handoff is time-gated and owner-reported sending is distinct from provider verification. |
+| Risk Alerts | **COMPLETE AND VERIFIED for stored assessments** | Shows persisted signals/evidence and whether Hindsight was available; payment and inbound-message writes trigger Risk assessment. |
+| Simulation Console | **PARTIALLY IMPLEMENTED** | Clock can advance by days/hours to reach scheduled contact times; reset is available in demo mode. Event injection still acknowledges without applying changes to the deterministic simulation world. |
 | Evaluation | **PARTIALLY IMPLEMENTED** | Reads and charts result data; no evaluation rows/results were present, so the real UI generally has an empty state. |
 
 UI controls are connected to the API client, but a connected button is not proof of completed business behavior. No WebSockets are used. No frontend `.env*` file was present, and no secret is configured as a Vite variable.
@@ -154,7 +163,7 @@ No Supabase setup, database migration, or database write was performed by this a
 - A minimal live chat-completion request succeeded using `openai/gpt-oss-120b`.
 - The live model-list request did **not** list the configured customer model `qwen/qwen3-32b`. The model setting was not changed.
 - Groq SDK calls are confined to `backend/munshi/llm/groq_client.py`. The wrapper contains request construction, JSON/structured-output handling, retries, rate-limit code, and fallback paths, but those behaviors were not verified against the live service.
-- Five backend tests fail because they patch `munshi.llm.groq_client.Groq`, but the implementation imports `Groq` inside `_initialize` and does not expose that module-level name. The live minimal SDK request does not verify the wrapper’s complete behavior.
+- The earlier Groq mock-patching failures were fixed in Prompt 3 by exposing an injectable client factory and constructing test clients before singleton initialization. The live minimal SDK request does not verify the wrapper’s full provider behavior.
 
 ## 8. Hindsight integration status
 
@@ -168,7 +177,7 @@ No Supabase setup, database migration, or database write was performed by this a
 - FastAPI lifespan starts and stops the outbox worker. A process-local lock prevents overlapping passes; stable event IDs are sent as Hindsight document IDs, retries honor due times and stop at the configured bound, and success is recorded only after confirmed retention. Mocked tests cover retry/failure handling, duplicate processing, redaction and lifecycle.
 - Outbox metadata is restricted to event/customer/invoice identifiers; phone numbers with common spaces/parentheses/separators, labeled account numbers, IFSC codes, and labeled UPI/VPA identifiers are redacted; known unsent-draft kinds are excluded. This does not replace careful upstream construction of durable learned facts.
 
-The final focused run had 58 passed, one pre-existing parser-title failure and two expected live-test skips. The full backend run collected 314 tests: 306 passed, 6 failed, 2 skipped. The failures match the baseline: five Groq mock-patching failures and the playbook-title assertion. No unrelated failures were changed.
+Prompt 2's historical focused run had 58 passed, one pre-existing parser-title failure and two expected live-test skips. Its full backend run collected 314 tests: 306 passed, 6 failed, 2 skipped. Prompt 3 resolved the five Groq mock-patching failures; the current full-suite results are recorded in “Current status after Prompt 3” and section 13.
 
 ## 9. Band AI status
 
@@ -187,28 +196,28 @@ Official reference checked during this audit: [Band Python quickstart](https://d
 
 | # | Feature | Status | Verified behavior and remaining gap |
 |---:|---|---|---|
-| 1 | Dashboard | **PARTIALLY IMPLEMENTED** | Reads DB-backed totals/counts; balances do not subtract payments. |
+| 1 | Dashboard | **COMPLETE AND VERIFIED for ledger balances** | Reads DB-backed totals/counts and subtracts recorded payments from outstanding and overdue balances. |
 | 2 | Customer management | **PARTIALLY IMPLEMENTED** | DB-backed list, detail, and patch exist; creation is indirect through CSV import. |
 | 3 | Customer payment history | **COMPLETE AND VERIFIED** | Payments are stored in SQLite and included in the customer timeline; this is ledger history, not Hindsight history. |
-| 4 | Invoice creation and management | **PARTIALLY IMPLEMENTED** | Create, readiness, upload, confirm, send, and import routes exist; invoice list/detail UI/API is absent. |
-| 5 | Invoice readiness checks | **PARTIALLY IMPLEMENTED** | R1-R9 code/tests exist; normal API input cannot supply invoice GSTIN or PO amount. |
+| 4 | Invoice creation and management | **PARTIALLY IMPLEMENTED** | Create, readiness, upload, confirm, send, and import routes exist; invoice list/detail UI/API is absent. Create now accepts invoice GSTIN and PO amount. |
+| 5 | Invoice readiness checks | **COMPLETE AND VERIFIED for available contract inputs** | R1-R9 code/tests exist; normal API supplies invoice GSTIN and PO amount to the checks. |
 | 6 | GSTIN validation | **PARTIALLY IMPLEMENTED** | Format/check-character/state helpers exist. They do not check the government registry or prove active legal ownership. Invoice GSTIN cannot be supplied in the normal flow; demo fixture GSTINs fail the implemented checksum. |
 | 7 | Purchase order validation | **PARTIALLY IMPLEMENTED** | Required PO number checks work. Amount tolerance is skipped when no PO amount is supplied; normal API has no PO amount field. |
 | 8 | Required document validation | **COMPLETE AND VERIFIED** | Upload metadata is stored in SQLite and readiness checks configured required document types; file bytes are on local disk. |
 | 9 | Learned customer requirements | **PARTIALLY IMPLEMENTED** | Requirement codes and precedence are implemented; the repaired app wrapper now retrieves memory, but `EINVOICE_IRN` has no corresponding document/IRN field. |
-| 10 | Collector agent | **PARTIALLY IMPLEMENTED** | Draft logic has unit coverage, but no normal API/scheduler path invokes it. |
-| 11 | Risk agent | **PARTIALLY IMPLEMENTED** | Signal/classification logic and evidence references have tests; normal payment/message flows do not trigger reassessment. |
-| 12 | Reminder drafting | **PARTIALLY IMPLEMENTED** | Collector can draft when directly invoked; no live daily trigger or UI/API draft-generation path exists. |
-| 13 | Owner approval workflow | **PARTIALLY IMPLEMENTED** | Approve/edit/reject mutations are stored; approval immediately marks the action `SENT` before actual delivery. |
-| 14 | Inbound customer messages | **PARTIALLY IMPLEMENTED** | Endpoint persists messages and a local memory-event row; no live channel ingestion or risk-worker queue exists. |
-| 15 | Payment recording | **COMPLETE AND VERIFIED** | API enforces outstanding amount, stores payment, and updates invoice status; it does not trigger live memory/Risk workflows. |
+| 10 | Collector agent | **COMPLETE AND VERIFIED for local draft workflow** | A lifecycle-managed daily pass creates deduplicated, evidence-backed action drafts; it does not send messages. |
+| 11 | Risk agent | **COMPLETE AND VERIFIED for local assessment workflow** | Daily assessments and payment/inbound-message-triggered reassessments persist levels, signals, evidence, and memory availability. |
+| 12 | Reminder drafting | **COMPLETE AND VERIFIED for scheduled candidates** | Collector selects due/overdue ledger invoices, applies its timing/promise rules, and persists drafts with a daily dedupe key. |
+| 13 | Owner approval workflow | **COMPLETE AND VERIFIED for handoff state** | Approve/edit/reject mutations persist; approval stays `APPROVED`/`EDITED`. Guarded WhatsApp handoff does not mark sent; owner confirmation records `OWNER_REPORTED`. |
+| 14 | Inbound customer messages | **COMPLETE AND VERIFIED for API ingestion** | Endpoint validates customer/invoice relationship, commits message and memory event, then reports explicit Risk assessment completion/failure. No channel webhook integration is claimed. |
+| 15 | Payment recording | **COMPLETE AND VERIFIED** | API enforces outstanding amount, commits payment and invoice status, triggers Risk, and reports assessment failure without undoing the payment. |
 | 16 | Hindsight retention and retrieval | **COMPLETE AND VERIFIED for the Prompt 2 adapter/outbox scope** | The official SDK is installed in the active backend venv; live synthetic tests exercised the wrapper, retention, recall, reflection, customer/business isolation, and outbox processing. |
 | 17 | Band AI workflow | **PLACEHOLDER / MOCK** | Command parsing exists; room bridge logs rather than posts and approval routing is absent. |
 | 18 | Simulation engine | **COMPLETE AND VERIFIED** | Deterministic world, profiles, scenarios, time advancement, injection and world-rule tests exist. The HTTP controls are not connected to it. |
 | 19 | Evaluation Arms A/B/C | **PARTIALLY IMPLEMENTED** | Arms, metrics, and runner code/tests exist; no result rows were in SQLite and Arm C depends on Hindsight. |
-| 20 | WhatsApp prefilled message | **PARTIALLY IMPLEMENTED** | A `wa.me` URL can be generated outside simulator mode; no WhatsApp API send occurs and simulator mode does not deliver to a simulated customer. |
-| 21 | Risk alerts | **PARTIALLY IMPLEMENTED** | Read/ack routes and agent persistence exist; seeded alerts are visible but there is no normal trigger. |
-| 22 | Explainability and evidence | **PLACEHOLDER / MOCK** | Readiness may include evidence IDs and Risk can create evidence; action rationale is generic, action explanation is empty, and `/api/explain` returns a fixed answer. |
+| 20 | WhatsApp prefilled message | **PARTIALLY IMPLEMENTED** | Approved action can open a prefilled `wa.me` link during the scheduled 09:00–19:00 IST window; no provider send/delivery API is implemented. |
+| 21 | Risk alerts | **COMPLETE AND VERIFIED for local triggers** | Daily and event-triggered assessments persist alerts with evidence and memory availability; Band posting remains blocked/unavailable. |
+| 22 | Explainability and evidence | **PARTIALLY IMPLEMENTED** | Draft rationale/evidence, risk evidence, and customer-scoped Hindsight context are exposed. `/api/explain` remains limited to available ledger/memory evidence and reports memory availability. |
 
 ## 11. API endpoint verification
 
@@ -218,26 +227,28 @@ Official reference checked during this audit: [Band Python quickstart](https://d
 |---|---|---|---|---|
 | `GET /health` | Yes | App-clock liveness; no DB query | Yes; live HTTP 200 | No |
 | `POST /api/import/tally-csv` | Yes | Creates SQLite customer/invoice rows from CSV | Yes | No |
-| `GET /api/dashboard` | Yes | SQLite aggregate queries; amount calculations are incomplete | Yes | Yes |
+| `GET /api/dashboard` | Yes | SQLite aggregate queries use payment-adjusted outstanding balances | Yes | Yes |
 | `GET /api/customers` | Yes | SQLite customer/invoice aggregates | Yes | Yes |
-| `GET /api/customers/{id}` | Yes | SQLite record/timeline; playbook and beliefs are fixed empty values | Yes | Yes |
+| `GET /api/customers/{id}` | Yes | Ledger timeline/balance and customer-scoped Hindsight context with explicit memory status | Yes | Yes |
 | `PATCH /api/customers/{id}` | Yes | Updates SQLite and creates local memory-event row | Yes | No |
-| `POST /api/invoices` | Yes | Writes invoice/readiness rows; invokes readiness code | Yes | Yes |
+| `POST /api/invoices` | Yes | Writes invoice/readiness rows and accepts invoice GSTIN/PO amount inputs | Yes | Yes |
 | `POST /api/invoices/{id}/documents` | Yes | Saves file to local disk and metadata to SQLite | Yes | Yes |
 | `POST /api/invoices/{id}/check` | Yes | Updates readiness/check rows; asks the memory abstraction | Yes | Yes |
 | `POST /api/invoices/{id}/confirm` | Yes | Updates customer requirement/readiness in SQLite | Yes | No |
 | `POST /api/invoices/{id}/send` | Yes | Marks invoice SENT and creates local memory-event row; no real send | Yes | No |
-| `GET /api/actions?status=...` | Yes | Reads SQLite; `why` is generic fixed text | Yes | Yes |
-| `POST /api/actions/{id}/approve` | Yes | Sets action SENT and writes event before any real delivery; may return a `wa.me` link | Yes | Yes |
+| `GET /api/actions?status=...` | Yes | Reads SQLite evidence/rationale and reports handoff/owner-confirmation state | Yes | Yes |
+| `POST /api/actions/{id}/approve` | Yes | Persists APPROVED/EDITED; never marks sent or sends a message | Yes | Yes |
+| `GET /api/actions/{id}/handoff` | Yes | Validates approval, phone, planned time and contact hours, then redirects to a prefilled WhatsApp URL | Yes | Yes |
+| `POST /api/actions/{id}/confirm-delivery` | Yes | Stores owner-reported sending after handoff; provider delivery remains unverified | Yes | Yes |
 | `POST /api/actions/{id}/reject` | Yes | Updates SQLite; optional reason becomes local memory-event row | Yes | Yes |
-| `GET /api/actions/{id}/explain` | Yes | SQLite lookup, generic summary, empty evidence | Yes | Yes |
-| `POST /api/messages/inbound` | Yes | Writes SQLite message and local memory event; returns success-shaped `risk_check_queued` without a worker | Yes | No |
-| `POST /api/payments` | Yes | Writes payment and updates invoice status in SQLite | Yes | No |
+| `GET /api/actions/{id}/explain` | Yes | Returns persisted action rationale and evidence references | Yes | Yes |
+| `POST /api/messages/inbound` | Yes | Commits message/event then performs a Risk assessment; response reports completed/failed status | Yes | No |
+| `POST /api/payments` | Yes | Commits payment/status then assesses Risk; assessment failure does not roll back payment | Yes | No |
 | `GET /api/risk/alerts` | Yes | Reads SQLite alert rows | Yes | Yes |
 | `POST /api/risk/alerts/{id}/ack` | Yes | Updates SQLite alert status | Yes | Yes |
-| `POST /api/explain` | Yes | Checks customer exists, then returns fixed “No evidence is available yet.” | Yes | No |
+| `POST /api/explain` | Yes | Uses customer-scoped ledger/memory evidence and reports memory availability | Yes | No |
 | `POST /api/sim/reset` | Yes | Drops/recreates DB and seeds demo; scenario name is not used | Yes | Yes |
-| `POST /api/sim/tick?days=N` | Yes | Advances clock only; reports zero drafts/alerts | Yes | Yes |
+| `POST /api/sim/tick?days=N&hours=N` | Yes | Advances simulated time; daily workflow is separate and injection still does not apply to the simulation world | Yes | Yes |
 | `POST /api/sim/inject` | Yes | Returns `{ok: true}` without applying the event | Yes | Yes |
 | `GET /api/eval/results` | Yes | Reads `sim_run`; empty/default results when no runs are saved | Yes | Yes |
 | `GET /api/documents/{id}` | Handler only; not registered | Would read SQLite metadata and local file | No | No |
@@ -249,9 +260,9 @@ The frontend does not call CSV import, customer patch, invoice confirm/send, inb
 | Category | Examples |
 |---|---|
 | Hardcoded demo data | Seed literals, simulation profiles, and scenarios are fictional values in source and are persisted only when the corresponding seed/reset path runs. |
-| Hardcoded API results | Customer playbook/beliefs are empty/updating; action `why` is generic; action explanation has no evidence; `/api/explain` always says no evidence is available. |
+| Hardcoded API results | Evaluation results may be empty when no runs are persisted; simulation injection currently acknowledges without applying world state. |
 | Mocked external behavior | Band bridge logs “Would post”; frontend tests mock `fetch`; agent tests mock external collaborators. |
-| Placeholder workflow | Daily loop has TODO logic; sim tick/inject do not execute the world; inbound “risk queued” does not correspond to a worker. |
+| Placeholder workflow | Simulation injection does not apply to the deterministic world; Band does not deliver messages or route commands. |
 | Graceful fallback, not integration | Groq fallback text and Hindsight empty-result fallbacks can look like valid business results unless surfaced distinctly. |
 | Local-only persistence | SQLite is local; invoice file uploads are stored on local disk. Neither uses Supabase or cloud object storage. |
 
@@ -261,23 +272,13 @@ The frontend does not call CSV import, customer patch, invoice confirm/send, inb
 
 Command run from `backend`: `.\.venv\Scripts\python.exe -m pytest -q`
 
-- Collected: **328**
-- Passed: **317**
-- Failed: **6**
-- Skipped: **5**
-- Warnings: **9**
-- Duration: **36.58 seconds**
+- Collected: **319**
+- Passed: **316**
+- Failed: **1**
+- Skipped: **2**
+- Warnings: **7**
 
-Reproduced failures (none were caused by this documentation-only audit; the previous audit recorded the same six failures):
-
-1. `tests/test_groq_client.py::TestChatCompletion::test_successful_completion`
-2. `tests/test_groq_client.py::TestChatCompletion::test_completion_with_structured_output`
-3. `tests/test_groq_client.py::TestChatCompletion::test_completion_with_rate_limit_headers`
-4. `tests/test_groq_client.py::TestChatCompletion::test_completion_retry_on_error`
-5. `tests/test_groq_client.py::TestHelperFunctions::test_generate_reminder_draft`  
-   These fail because the mock patches `munshi.llm.groq_client.Groq`, which is not a module-level attribute.
-6. `tests/test_queries.py::TestParsePlaybook::test_parse_playbook_json`  
-   The test expects title `Payment Collection`; parser returns `Payment Collection Playbook`.
+The single remaining failure is `tests/test_queries.py::TestParsePlaybook::test_parse_playbook_json`: the existing assertion expects “Payment Collection” while the parser returns “Payment Collection Playbook.” The five Groq mock-patching failures from the earlier baseline are resolved.
 
 Two opt-in Hindsight integration tests exercise the application wrapper and outbox against Cloud with synthetic data; both passed in the explicit live run and skip by default.
 
@@ -317,20 +318,17 @@ No credential values are reproduced here.
 
 ## 15. Critical bugs and architectural problems
 
-1. **Approval is not delivery:** approval records `SENT` and `sent_at` before a message is sent. The WhatsApp URL is only a manual handoff; simulator mode has no simulated delivery.
-2. **Agent logic is unreachable in routine operation:** no daily loop or normal API path invokes Collector/Risk.
+1. **No provider delivery integration:** approval and manual WhatsApp handoff are separate and accurate, but `SENT` is only an owner report; no WhatsApp provider API verifies delivery.
+2. **Band is not connected:** no actual room posting, inbound command route, or web/Band approval parity was verified.
 3. **Simulation API is disconnected from the actual engine:** tick and injection return success without doing the advertised work.
-4. **Memory retry is now automatic within the Prompt 2 scope:** the lifespan-managed outbox retries bounded failures. This does not provide a distributed lock across multiple backend processes.
-5. **Financial summary can be misleading:** dashboard and customer overdue totals use invoice face values, not outstanding balance after payments.
-6. **Evidence is lost at API boundary:** drafts have generic reasons and explain endpoints return no evidence.
-7. **Normal invoice flow omits fields needed for R3/R6:** invoice GSTIN and purchase-order amount are not accepted; IRN is not modeled.
-8. **Database selection depends on working directory:** both an initialized backend DB and an empty project-root DB exist.
-9. **No schema migrations:** model changes can leave existing database files out of date.
-10. **Band is not a transport:** no actual room posting, inbound command route, or approval parity was verified.
-11. **Demo GSTINs fail the current checksum implementation:** canned invoices may appear blocked for the wrong demonstration reason. The checksum does not consult the government registry.
-12. **Deployment files disagree:** Dockerfile requires the absent `uv.lock`; README/Makefile assume `uv`, which was unavailable here. Hindsight Compose image uses `latest`, reducing reproducibility.
-13. **Documentation contradicts observed behavior:** README calls the project a skeleton, while `docs/AI_PROGRESS.md` labels Hindsight/Groq/Band complete. `docs/INTEGRATION_VERIFICATION.md` describes an older Hindsight API. API/database docs also disagree with current duplicate and constraint behavior.
-14. **Credential exposure:** a prior test assertion printed the Groq key in local output. Rotate if that output might be shared.
+3. **Simulation injection remains a placeholder:** clock control works, including hour advancement; injecting an event still does not update the simulation world.
+4. **Evaluation results may be empty:** no `sim_run` persistence workflow was connected in this stage.
+5. **IRN is not modeled:** learned `EINVOICE_IRN` needs a dedicated document/IRN contract.
+6. **Database selection depends on working directory:** both an initialized backend DB and an empty project-root DB exist.
+7. **No general schema migration framework:** only safe additive SQLite columns for the new Prompt 3 fields are added at startup.
+8. **Demo GSTINs fail the current checksum implementation:** canned invoices may appear blocked for the wrong demonstration reason. The checksum does not consult the government registry.
+9. **Deployment files disagree:** Dockerfile requires the absent `uv.lock`; README/Makefile assume `uv`, which was unavailable here. Hindsight Compose image uses `latest`, reducing reproducibility.
+10. **Credential exposure:** a prior test assertion printed the Groq key in local output. Rotate if that output might be shared.
 
 ## 16. Remaining work
 
@@ -338,11 +336,8 @@ No credential values are reproduced here.
 - Preserve the verified Hindsight adapter/outbox behavior; address only newly discovered defects. The outbox lock is process-local, not distributed.
 - Resolve the official Band SDK dependency installation, register remote agents, and implement/test real room and command transport.
 - Decide on a supported Groq customer model before changing the configured identifier.
-- Wire the daily loop and controlled Collector/Risk triggers to invoice, payment, and inbound-message workflows.
-- Separate approval, handoff, and confirmed delivery states; preserve mandatory owner approval.
-- Persist draft evidence and return it through action/explanation APIs.
-- Connect simulation API controls to the deterministic world and persist evaluation outputs.
-- Correct outstanding receivable calculations and add invoice GSTIN/PO amount inputs only after confirming the product contract.
+- Connect simulation event injection to the deterministic world and persist evaluation outputs (later stage).
+- Add a dedicated IRN/document field if required by the product contract.
 - Correct synthetic GSTIN fixtures and test known-valid format/checksum examples.
 - Add migrations and resolve the relative SQLite path before schema growth or deployment.
 - Fix the Dockerfile/lockfile mismatch; add ESLint configuration if lint is a required check.
@@ -354,25 +349,26 @@ No credential values are reproduced here.
 |---|---|---|
 | Database/backend foundation | **Skip a rebuild; retain only a verification pass** | The twelve SQLite entities, app foundation, route registration, error handling, and seed are present and tested. Keep SQLite; do not redo the foundation. |
 | Invoice readiness | **Modify to close contract gaps only** | R1-R9 and tests exist. Focus on missing invoice GSTIN/PO amount inputs, demo GSTIN fixtures, and blocked learned-memory reads rather than rewriting the rules. |
-| Collector and Risk | **Modify to wire existing logic** | Agents and policy tests exist. The remaining work is runtime triggers, memory evidence, and persistence; do not duplicate agent logic. |
+| Collector and Risk | **Complete for Prompt 3 scope** | Runtime triggers, evidence persistence, ledger balances, and owner-gated handoff are implemented; do not duplicate agent logic. |
 | Frontend | **Skip rebuilding the seven screens; modify integration gaps** | Screens, central API client, tests, and production build exist. Prioritize live-backend validation and missing UI paths instead of recreating pages. |
 | Prompt 1 credential configuration/audit | **Do not repeat as a setup task** | Groq/Hindsight settings are present; Groq had a live successful request and Hindsight was subsequently verified through Munshi's wrapper. Band remains blocked. Rotate the Groq key if earlier local test output could be exposed. |
 | Prompt 2 Hindsight repair | **Complete for the requested stage** | Installed SDK 1.2.0, repaired and live-tested the app wrapper, customer/business isolation, and outbox path. |
-| Prompts 3 and 4 | **Not yet confirmed** | Their exact requirements have not been supplied. The recommended stage boundaries below are proposals, not confirmed user-provided prompt contracts. |
+| Prompt 3 | **Complete for requested workflow scope** | Collector/Risk runtime workflows, Groq testability/error reporting, truthful approval/handoff states, ledger/API corrections, focused frontend alignment, and docs are implemented and tested. |
+| Prompt 4 | **Not started** | Simulation world integration, evaluation persistence, and full product integration remain separate work. |
 
 ### Recommended stage boundaries
 
 1. **Prompt 2 — Hindsight integration repair:** complete. Do not repeat this stage unless new Hindsight integration defects are found.
-2. **Prompt 3 — Band and runtime workflow:** after the official SDK is installable and credentials are configured, verify remote agent setup, room posting, command routing, approval parity, and then wire normal backend triggers for Collector/Risk without bypassing owner approval.
+2. **Prompt 3 — operational runtime workflow:** complete. Band remains a separate blocked dependency and was not integrated.
 3. **Prompt 4 — End-to-end simulation/evaluation and product integration:** connect sim APIs to the engine, persist evaluation outputs, reconcile evidence and financial summaries, and verify frontend-to-live-backend workflows.
 
 ## 18. Integration risks
 
 - Hindsight is integrated through the verified wrapper; live checks used only synthetic data. Continue to treat Cloud outages as unavailable memory, not as “no learned behavior.”
-- Groq's agent model works, but the configured customer model is not listed and structured output/retries have not been verified live.
+- Groq's agent model worked in a previous live request, but the configured customer model was not listed in the prior model-list response; structured output/retries have not been verified live.
 - Band Desktop, Band account sign-in, and a registered remote agent API key are distinct setup requirements.
 - Frontend tests with mocked `fetch` do not establish live API compatibility.
-- `SENT` currently conflates owner approval with message delivery.
-- Simulation endpoints currently provide success-shaped responses without applying scenario changes.
+- `SENT` means an owner reported sending; provider delivery is not verified.
+- Simulation event injection acknowledges the request but does not apply changes to the deterministic world.
 - Relative SQLite paths, absent migrations, and missing `uv.lock` can break local/container parity.
 - The enclosing Git repository treats the entire project folder as untracked, limiting reliable change-history attribution.

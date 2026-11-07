@@ -16,6 +16,11 @@ from pydantic import BaseModel
 
 from munshi.config import settings
 
+try:
+    from groq import Groq
+except ImportError:
+    Groq = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -79,6 +84,33 @@ class RateLimitError(Exception):
         self.retry_after = retry_after
 
 
+class GroqRequestError(RuntimeError):
+    """Sanitized provider error that never includes request credentials or body."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _sanitize_groq_error(error: Exception) -> GroqRequestError:
+    status_code = getattr(error, "status_code", None)
+    safe_detail = str(error).casefold()
+    if status_code == 401:
+        return GroqRequestError("INVALID_CREDENTIALS", "Groq rejected the configured credentials.")
+    if status_code == 404 or (
+        "model" in safe_detail
+        and any(term in safe_detail for term in ("not found", "unavailable", "does not exist"))
+    ):
+        return GroqRequestError("MODEL_UNAVAILABLE", "The configured Groq model or endpoint is unavailable.")
+    if status_code == 429:
+        return GroqRequestError("RATE_LIMITED", "Groq rate limit was reached after retries.")
+    if status_code in (400, 403):
+        return GroqRequestError("INVALID_REQUEST", "Groq rejected the request or model configuration.")
+    if status_code and status_code >= 500:
+        return GroqRequestError("PROVIDER_UNAVAILABLE", "Groq is temporarily unavailable.")
+    return GroqRequestError("PROVIDER_ERROR", "Groq request failed after retries.")
+
+
 class GroqClient:
     """
     Wrapper around Groq SDK client.
@@ -96,13 +128,13 @@ class GroqClient:
     
     _instance: Optional["GroqClient"] = None
     
-    def __new__(cls):
+    def __new__(cls, *args: Any, **kwargs: Any):
         """Singleton pattern for client."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
         return cls._instance
     
-    def __init__(self):
+    def __init__(self, client_factory: Optional[Callable[..., Any]] = None):
         if hasattr(self, "_initialized"):
             return
         
@@ -115,6 +147,7 @@ class GroqClient:
         self._customer_model = settings.GROQ_CUSTOMER_MODEL
         self._api_key = settings.GROQ_API_KEY
         self._base_url = settings.GROQ_BASE_URL
+        self._client_factory = client_factory if client_factory is not None else Groq
         
         # Rate limit tracking
         self._rate_limit_remaining = 1000
@@ -131,21 +164,21 @@ class GroqClient:
                 "Set GROQ_API_KEY for production."
             )
             return
+        if self._client_factory is None:
+            logger.warning("groq SDK is unavailable; using deterministic fallback mode")
+            return
         
         try:
-            from groq import Groq
-            self._client = Groq(
+            self._client = self._client_factory(
                 api_key=self._api_key,
                 base_url=self._base_url,
             )
             self._is_available = True
             logger.info("Groq client initialized successfully")
         except ImportError:
-            logger.warning(
-                "groq SDK not installed. Install with: pip install groq"
-            )
-        except Exception as e:
-            logger.error(f"Failed to initialize Groq client: {e}")
+            logger.warning("groq SDK is unavailable; using deterministic fallback mode")
+        except Exception as error:
+            logger.error("Groq client initialization failed (%s)", type(error).__name__)
     
     @property
     def client(self):
@@ -278,7 +311,7 @@ class GroqClient:
         model: str,
         messages: List[Dict[str, str]],
         temperature: float = 0.7,
-        response_format: Optional[BaseModel] = None,
+        response_format: Optional[type[BaseModel]] = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
     ) -> Dict[str, Any]:
@@ -363,7 +396,11 @@ class GroqClient:
                         else:
                             parsed = response_format.model_validate_json(content)
                     except Exception as e:
-                        logger.warning(f"Failed to parse response as {response_format.__name__}: {e}")
+                        logger.warning(
+                            "Failed to parse Groq response as %s (%s)",
+                            response_format.__name__,
+                            type(e).__name__,
+                        )
                 
                 return {
                     "content": content,
@@ -378,16 +415,23 @@ class GroqClient:
                     },
                 }
                 
-            except Exception as e:
-                logger.error(f"Groq API error (attempt {attempt + 1}/{max_retries}): {e}")
+            except Exception as error:
+                status_code = getattr(error, "status_code", None)
+                logger.warning(
+                    "Groq API request failed (attempt %s/%s, status=%s, type=%s)",
+                    attempt + 1,
+                    max_retries,
+                    status_code or "unknown",
+                    type(error).__name__,
+                )
                 
                 # Handle rate limit specifically
-                if "429" in str(e) or "rate limit" in str(e).lower():
+                if status_code == 429 or "429" in str(error) or "rate limit" in str(error).lower():
                     await asyncio.sleep(retry_delay * (2 ** attempt))
                     continue
                 
                 # Handle unsupported model features
-                if "structured" in str(e).lower() or "json_schema" in str(e).lower():
+                if "structured" in str(error).lower() or "json_schema" in str(error).lower():
                     # Try fallback without structured output
                     if response_format and attempt < max_retries - 1:
                         logger.warning("Model doesn't support structured outputs, trying fallback")
@@ -399,10 +443,13 @@ class GroqClient:
                             max_retries=1,
                         )
                         return result
-                    raise
+                    raise _sanitize_groq_error(error) from None
+
+                if status_code in (400, 401, 403, 404):
+                    raise _sanitize_groq_error(error) from None
                 
                 if attempt == max_retries - 1:
-                    raise
+                    raise _sanitize_groq_error(error) from None
         
         return {
             "content": "Groq LLM unavailable after retries",
@@ -437,13 +484,15 @@ class GroqClient:
         if self._client:
             try:
                 await asyncio.to_thread(self._client.close)
-            except Exception as e:
-                logger.warning(f"Error closing Groq client: {e}")
+            except Exception as error:
+                logger.warning("Groq client close failed (%s)", type(error).__name__)
 
 
-def get_groq_client() -> GroqClient:
+def get_groq_client(
+    client_factory: Optional[Callable[..., Any]] = None,
+) -> GroqClient:
     """Get or create Groq client singleton."""
-    return GroqClient()
+    return GroqClient(client_factory=client_factory)
 
 
 def is_groq_available() -> bool:

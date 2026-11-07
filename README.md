@@ -1,6 +1,6 @@
 # Munshi — AI collections agent with persistent memory
 
-> Built for HackWithHyderabad 3.0. **Status: project skeleton. No features are implemented yet.**
+> Built for HackWithHyderabad 3.0. **Status: local prototype.** The SQLite ledger, readiness checks, Collector/Risk workflows, approval handoff, and Hindsight adapter are implemented; Band transport, WhatsApp provider delivery, and simulation-world integration are not.
 > Start with [AGENTS.md](AGENTS.md) if you are an AI coding assistant.
 
 ## Problem statement
@@ -18,16 +18,18 @@ Scope: one persona (owner/accountant of a small manufacturer), one workflow (inv
 - Tally-style CSV import; invoice form with document uploads
 - Readiness check: rules R1–R9 + learned requirements with evidence
 - Collector agent (drafts follow-ups) and Risk agent (NORMAL / WATCH / HIGH)
-- Approvals inbox (web and Band room) with "Why this?" evidence, "Open in WhatsApp" handoff
-- Customer playbook card (Hindsight mental model), beliefs with trend arrows, timeline
+- Approvals inbox with evidence-backed drafts and owner-gated WhatsApp handoff (Band room delivery is not connected)
+- Customer playbook card and beliefs when customer-scoped Hindsight memory is available; unavailable memory is shown separately
 - Simulator (seeded, deterministic) + 3-way evaluation: A fixed schedule, B structured DB memory, C Hindsight
+
+Risk assessments run after payment and inbound-message ledger writes and in a bounded daily worker. A saved approval is not a sent message: WhatsApp only opens a prefilled link during the scheduled 09:00–19:00 IST window. `SENT` means an owner reported sending it; provider delivery is not verified. See [IMPLEMENTATION_STATUS_AUDIT.md](IMPLEMENTATION_STATUS_AUDIT.md) for verified scope, test results, and remaining limitations.
 
 ## Technology stack
 | Layer | Choice |
 |---|---|
 | Backend | Python 3.11+, FastAPI, SQLModel, SQLite, pydantic-settings, uv |
 | Memory | Hindsight (Cloud for demo, Docker locally) |
-| Agents / collaboration | Band (`band-sdk`) — agents are backend modules |
+| Agent collaboration | Band SDK integration is pending; web approval is the available fallback |
 | LLM | Groq: `gpt-oss-120b` (agents), `qwen3-32b` (simulated customers) |
 | Frontend | React 18, Vite, TypeScript, Tailwind, TanStack Query, Recharts |
 | Tooling | Docker Compose, Makefile, pytest, ruff, GitHub Actions |
@@ -55,7 +57,7 @@ make test     # unit tests (integration tests need a reachable Hindsight)
 make eval     # A/B/C evaluation across seeds 1,2,3
 make spike    # Day 1–2 go/no-go memory test
 ```
-Currently most commands will run but do nothing useful: modules are placeholders. See [IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md).
+The local database, readiness rules, Collector/Risk logic, and API are exercised by the backend tests. The simulation event-injection endpoint does not yet update the deterministic simulation world, evaluation results are not populated by an end-to-end run, and Band is not connected. See [IMPLEMENTATION_ROADMAP.md](IMPLEMENTATION_ROADMAP.md) and the [implementation audit](IMPLEMENTATION_STATUS_AUDIT.md) before relying on any workflow.
 
 ## Folder structure
 ```

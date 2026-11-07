@@ -83,6 +83,8 @@ async def create_invoice(
         due_date=body.due_date,
         amount_paise=body.amount_paise,
         po_number=body.po_number,
+        invoice_gstin=body.invoice_gstin,
+        po_amount_paise=body.po_amount_paise,
         status=InvoiceStatus.DRAFT,
         created_at=clock.now(),
     )
@@ -92,7 +94,12 @@ async def create_invoice(
     invoice.customer = customer
 
     # Run readiness check
-    result = await check_readiness(invoice, session=session)
+    result = await check_readiness(
+        invoice,
+        session=session,
+        invoice_gstin=invoice.invoice_gstin,
+        po_amount_paise=invoice.po_amount_paise,
+    )
     readiness_enum = InvoiceReadiness(result.status)
     invoice.readiness = readiness_enum
     session.add(invoice)
@@ -126,6 +133,8 @@ async def create_invoice(
         status=invoice.status,
         readiness=invoice.readiness,
         findings=findings_out,
+        invoice_gstin=invoice.invoice_gstin,
+        po_amount_paise=invoice.po_amount_paise,
     )
 
 
@@ -142,7 +151,12 @@ async def check_invoice_readiness_endpoint(
     customer = session.get(Customer, invoice.customer_id)
     invoice.customer = customer
 
-    result = await check_readiness(invoice, session=session)
+    result = await check_readiness(
+        invoice,
+        session=session,
+        invoice_gstin=invoice.invoice_gstin,
+        po_amount_paise=invoice.po_amount_paise,
+    )
     readiness_enum = InvoiceReadiness(result.status)
     invoice.readiness = readiness_enum
     session.add(invoice)

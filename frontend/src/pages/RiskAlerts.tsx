@@ -44,6 +44,10 @@ export default function RiskAlerts() {
                   <div>
                     <p className="text-sm font-semibold text-slate-800">{customerNames.get(alert.customer_id) ?? `Customer #${alert.customer_id}`}</p>
                     <p className="mt-1 text-xs text-slate-400">Alert #{alert.id} · {formatDateTime(alert.created_at)} IST</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      Automated assessment for owner review · Hindsight {alert.memory_status.toLowerCase()}
+                      {alert.memory_status === 'UNAVAILABLE' ? '; ledger evidence only' : ''}
+                    </p>
                   </div>
                   <div className="flex items-center gap-2">
                     <RiskBadge level={alert.from_level} />

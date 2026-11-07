@@ -5,20 +5,23 @@ Munshi - Payments API
 from __future__ import annotations
 
 import uuid
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, func, select
 
+from munshi.agents.risk import RiskAgent
 from munshi.api.schemas import PaymentCreate, PaymentOut
 from munshi.config import clock
 from munshi.db.models import Customer, Invoice, InvoiceStatus, MemoryEvent, Payment
 from munshi.db.session import get_session
 
 router = APIRouter(tags=["payments"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/payments", response_model=PaymentOut, status_code=201)
-def record_payment(
+async def record_payment(
     body: PaymentCreate,
     session: Session = Depends(get_session),
 ) -> PaymentOut:
@@ -93,8 +96,26 @@ def record_payment(
     session.commit()
     session.refresh(payment)
 
+    risk_level = None
+    risk_status = "COMPLETED"
+    risk_error = None
+    try:
+        assessment = await RiskAgent().on_payment(session, payment.id)
+        risk_level = assessment.get("level")
+    except Exception as error:
+        logger.error(
+            "Risk assessment failed after payment %s (%s)",
+            payment.id,
+            type(error).__name__,
+        )
+        risk_status = "FAILED"
+        risk_error = "Payment was recorded, but risk assessment failed."
+
     return PaymentOut(
         id=payment.id,
         invoice_status=invoice.status,
         days_late=days_late,
+        risk_assessment_status=risk_status,
+        risk_assessment_error=risk_error,
+        risk_level=risk_level,
     )

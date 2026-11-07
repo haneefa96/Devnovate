@@ -26,6 +26,8 @@ export default function NewInvoice() {
   const [dueDate, setDueDate] = useState('')
   const [amountRupees, setAmountRupees] = useState('')
   const [poNumber, setPoNumber] = useState('')
+  const [invoiceGstin, setInvoiceGstin] = useState('')
+  const [poAmountRupees, setPoAmountRupees] = useState('')
   const [docType, setDocType] = useState(DOCUMENT_TYPES[0])
   const [file, setFile] = useState<File | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
@@ -71,6 +73,15 @@ export default function NewInvoice() {
       setFormError('Enter an amount greater than zero with no more than two decimal places.')
       return
     }
+    let poAmountPaise: number | undefined
+    if (poAmountRupees.trim()) {
+      const poRupees = Number(poAmountRupees)
+      poAmountPaise = Math.round(poRupees * 100)
+      if (!Number.isFinite(poRupees) || !Number.isSafeInteger(poAmountPaise) || poAmountPaise <= 0) {
+        setFormError('Enter a purchase order amount greater than zero with no more than two decimal places.')
+        return
+      }
+    }
     setFormError(null)
     createMutation.mutate({
       customer_id: Number(customerId),
@@ -79,6 +90,8 @@ export default function NewInvoice() {
       due_date: dueDate,
       amount_paise: paise,
       ...(poNumber.trim() ? { po_number: poNumber.trim() } : {}),
+      ...(invoiceGstin.trim() ? { invoice_gstin: invoiceGstin.trim().toUpperCase() } : {}),
+      ...(poAmountPaise !== undefined ? { po_amount_paise: poAmountPaise } : {}),
     })
   }
 
@@ -130,6 +143,15 @@ export default function NewInvoice() {
                   <input value={poNumber} onChange={(event) => setPoNumber(event.target.value)} placeholder="Optional" className="field-control" />
                 </Field>
               </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <Field label="Invoice recipient GSTIN">
+                  <input maxLength={15} value={invoiceGstin} onChange={(event) => setInvoiceGstin(event.target.value.toUpperCase())} placeholder="Optional" className="field-control" />
+                </Field>
+                <Field label="Purchase order amount (₹)">
+                  <input min="0.01" step="0.01" type="number" value={poAmountRupees} onChange={(event) => setPoAmountRupees(event.target.value)} placeholder="Optional" className="field-control" />
+                </Field>
+              </div>
+              <p className="text-xs text-slate-400">GSTIN checks validate format and match only; they do not verify government registration or legal ownership.</p>
               {createMutation.isError && <ErrorNotice message={createMutation.error.message} />}
               {formError && <ErrorNotice message={formError} />}
               <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-5">

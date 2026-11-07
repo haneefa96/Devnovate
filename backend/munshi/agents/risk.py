@@ -21,6 +21,7 @@ from munshi.db.models import (
 )
 from munshi.memory import queries as memory_queries
 from munshi.memory.client import HindsightUnavailable
+from munshi.services.evidence import resolve_evidence
 
 logger = logging.getLogger(__name__)
 _DISTRESS_TERMS = (
@@ -104,7 +105,7 @@ class RiskAgent(BasePolicy):
         if distress_signal:
             signals.append(distress_signal)
 
-        memory_findings, observations = await self._customer_memory(customer)
+        memory_findings, observations, memory_available = await self._customer_memory(customer)
         allowed_memory_ids = {
             str(observation.get("id"))
             for observation in observations
@@ -134,20 +135,21 @@ class RiskAgent(BasePolicy):
                 for signal in signals
                 for evidence_id in signal.evidence_ids
             )),
+            memory_status="AVAILABLE" if memory_available else "UNAVAILABLE",
         )
         return await self._persist_assessment(session, customer, assessment, now)
 
     async def _customer_memory(
         self,
         customer: Customer,
-    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    ) -> tuple[dict[str, Any], list[dict[str, Any]], bool]:
         """Fetch Risk memory through the existing customer-scoped MemoryStore."""
         if customer.business is None:
-            return {}, []
+            return {}, [], False
         store = memory_queries.memory_store
         if not store.is_available:
             logger.warning("Risk memory unavailable for customer %s", customer.id)
-            return {}, []
+            return {}, [], False
         try:
             findings = await memory_queries.get_memory_for_risk(
                 bank_name=customer.business.bank_id,
@@ -162,10 +164,10 @@ class RiskAgent(BasePolicy):
             )
         except HindsightUnavailable:
             logger.warning("Risk memory service unavailable for customer %s", customer.id)
-            return {}, []
+            return {}, [], False
         return findings, [
             item for item in observations if _belongs_to_customer(item, customer.id)
-        ]
+        ], True
 
     async def _persist_assessment(
         self,
@@ -196,10 +198,8 @@ class RiskAgent(BasePolicy):
                 from_level=CustomerRiskLevel(previous_level),
                 to_level=CustomerRiskLevel(assessment.level),
                 signals=signal_descriptions,
-                evidence=[
-                    {"code": signal.code, "evidence_ids": signal.evidence_ids}
-                    for signal in assessment.signals
-                ],
+                evidence=resolve_evidence(session, assessment.evidence_ids),
+                memory_status=assessment.memory_status,
                 suggestion=assessment.suggestion,
                 status=RiskAlertStatus.OPEN,
                 created_at=now,
@@ -267,7 +267,9 @@ class RiskAgent(BasePolicy):
         date: datetime,
     ) -> list[dict[str, Any]]:
         """Reassess each customer using the supplied simulated date."""
-        customers = session.exec(select(Customer).order_by(Customer.id)).all()
+        customers = session.exec(
+            select(Customer).order_by(Customer.id).limit(100)
+        ).all()
         results = []
         for customer in customers:
             result = await self.calculate_risk_level(session, customer.id, as_of=date)

@@ -5,20 +5,23 @@ Munshi - Inbound messages API
 from __future__ import annotations
 
 import uuid
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session
 
+from munshi.agents.risk import RiskAgent
 from munshi.api.schemas import InboundMessageCreate, InboundMessageOut
 from munshi.config import clock
 from munshi.db.models import Customer, InboundMessage, Invoice, MemoryEvent
 from munshi.db.session import get_session
 
 router = APIRouter(tags=["messages"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/messages/inbound", response_model=InboundMessageOut, status_code=201)
-def record_inbound_message(
+async def record_inbound_message(
     body: InboundMessageCreate,
     session: Session = Depends(get_session),
 ) -> InboundMessageOut:
@@ -62,9 +65,26 @@ def record_inbound_message(
     session.commit()
     session.refresh(msg)
 
+    risk_level = None
+    risk_status = "COMPLETED"
+    risk_error = None
+    try:
+        assessment = await RiskAgent().on_customer_reply(session, msg.id)
+        if assessment and assessment[0].get("level"):
+            risk_level = assessment[0]["level"]
+    except Exception as error:
+        logger.error(
+            "Risk assessment failed for inbound message %s (%s)",
+            msg.id,
+            type(error).__name__,
+        )
+        risk_status = "FAILED"
+        risk_error = "Message was stored, but risk assessment failed."
+
     return InboundMessageOut(
         id=msg.id,
         memory_event_id=evt_id,
-        risk_check_queued=True,
+        risk_assessment_status=risk_status,
+        risk_assessment_error=risk_error,
+        risk_level=risk_level,
     )
-

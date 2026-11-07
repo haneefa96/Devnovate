@@ -2,6 +2,7 @@ import type {
   ActionDraft,
   ActionExplanation,
   ApprovalResult,
+  DeliveryConfirmationResult,
   CustomerDetail,
   CustomerSummary,
   DashboardSummary,
@@ -153,6 +154,19 @@ export function explainAction(actionId: number): Promise<ActionExplanation> {
   return request(`/actions/${actionId}/explain`)
 }
 
+export function getActionHandoffUrl(actionId: number): string {
+  return `${API_BASE_URL}/actions/${actionId}/handoff`
+}
+
+export function confirmActionDelivery(
+  actionId: number,
+  confirmedBy = 'owner',
+): Promise<DeliveryConfirmationResult> {
+  return request(`/actions/${actionId}/confirm-delivery`, jsonBody({
+    confirmed_by: confirmedBy,
+  }))
+}
+
 export function fetchRiskAlerts(status = 'OPEN'): Promise<RiskAlert[]> {
   return request(`/risk/alerts?status=${encodeURIComponent(status)}`)
 }
@@ -168,8 +182,11 @@ export function resetSimulation(scenario = 'demo'): Promise<SimulationResetResul
   return request('/sim/reset', jsonBody({ scenario }))
 }
 
-export function advanceSimulation(days: number): Promise<SimulationTickResult> {
-  return request(`/sim/tick?days=${encodeURIComponent(days)}`, { method: 'POST' })
+export function advanceSimulation(days: number, hours = 0): Promise<SimulationTickResult> {
+  return request(
+    `/sim/tick?days=${encodeURIComponent(days)}&hours=${encodeURIComponent(hours)}`,
+    { method: 'POST' },
+  )
 }
 
 export function injectSimulationEvent(
