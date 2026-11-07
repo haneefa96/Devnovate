@@ -21,7 +21,10 @@ pip-wheel-metadata/
 source/
 *.db
 *.sqlite
-
+# Python virtual environments
+backend/.venv/
+backend/.venv64/
+backend/.venv64
 # IDE and editor files
 .vscode/
 .idea/
@@ -75,3 +78,4 @@ htmlcov/
 /hindsight-install-log.txt
 /pytest-of-*/
 /uploads/
+backend/agent_config.yaml
