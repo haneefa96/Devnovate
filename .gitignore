@@ -1,0 +1,73 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.env/
+.venv/
+*.egg-info/
+*.egg
+.eggs/
+dist/
+build/
+pip-wheel-metadata/
+source/
+*.db
+*.sqlite
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs
+*.log
+logs/
+
+# Documentation
+docs/*.md
+!docs/API_CONFIGURATION.md
+!docs/IMPLEMENTATION_STATUS_AUDIT.md
+!docs/IMPLEMENTATION_CHECKLIST.md
+docs/images/
+
+# Frontend
+node_modules/
+dist/
+.next/
+.nuxt/
+
+# Cache and temp
+.cache/
+.tmp/
+temp/
+
+# Docker
+docker-compose.override.yml
+
+# Secrets and credentials
+*.pem
+*.key
+credentials.json
+service-account.json
+
+# CI
+.coverage
+htmlcov/
+
+# Test coverage
+.pytest_cache/
+.tox/
+
+# Build artifacts
+*.build
+*.pyc

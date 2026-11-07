@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  # Hindsight - Memory store
+  hindsight:
+    image: vectorizeio/hindsight:latest
+    container_name: munshi-hindsight
+    ports:
+      - "8888:8888"
+      - "9999:9999"
+    volumes:
+      - hindsight-data:/data
+    environment:
+      - HINDSIGHT_DATA_DIR=/data
+    restart: unless-stopped
+
+  # Backend - FastAPI server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: munshi-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - HINDSIGHT_LOCAL_URL=http://hindsight:8888
+      - DATABASE_URL=sqlite:///./munshi.db
+      - SIM_MODE=true
+    volumes:
+      - ./backend:/app/backend
+      - ./docs:/app/docs
+    depends_on:
+      - hindsight
+    restart: unless-stopped
+
+  # Frontend - React development server
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: munshi-frontend
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_URL=http://localhost:8000/api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+volumes:
+  hindsight-data:

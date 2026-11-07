@@ -1,0 +1,44 @@
+# Munshi Backend Dependencies
+# Install with: uv sync (uses pyproject.toml for dependency management)
+# This file is for reference only; pyproject.toml is the source of truth
+
+# Web Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+
+# Database
+sqlmodel>=0.0.16
+sqlalchemy>=2.0.25
+aiosqlite>=0.19.0
+
+# LLM Integration
+groq>=0.1.0
+
+# Hindsight Integration (hackathon mandatory)
+hindsight-client>=1.0.0
+
+# Band SDK (hackathon mandatory)
+band-sdk>=0.1.0
+
+# Validation and Serialization
+pydantic>=2.5.6
+pydantic-settings>=2.2.1
+
+# HTTP Client
+httpx>=0.26.0
+
+# Utilities
+python-dotenv>=1.0.0
+pytz>=2024.1
+
+# Testing
+pytest>=7.4.4
+pytest-asyncio>=0.23.4
+httpx>=0.26.0
+
+# Development
+ruff>=0.2.2
+mypy>=1.8.0
+
+# Type checking
+types-pytz>=2024.1

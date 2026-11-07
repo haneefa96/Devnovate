@@ -1,0 +1,27 @@
+{
+  "name": "demo",
+  "seed": 1,
+  "start_date": "2026-01-01",
+  "months": {
+    "learning": 3,
+    "testing": 3
+  },
+  "customers": [
+    {
+      "name": "Reddy Traders",
+      "profile": "reddy-traders",
+      "invoices": [
+        {"number": "INV-1001", "amount_paise": 4820000, "due_days": 30},
+        {"number": "INV-1002", "amount_paise": 4820000, "due_days": 30},
+        {"number": "INV-1003", "amount_paise": 4820000, "due_days": 30},
+        {"number": "INV-1004", "amount_paise": 4820000, "due_days": 30}
+      ]
+    },
+    {"name": "Sharma Suppliers", "profile": "sharma-suppliers"},
+    {"name": "Patel Enterprises", "profile": "patel-enterprises"},
+    {"name": "Gupta Electronics", "profile": "gupta-electronics"}
+  ],
+  "events": [
+    {"day": 5, "type": "payment_run", "customer": "Reddy Traders", "result": "paid"}
+  ]
+}

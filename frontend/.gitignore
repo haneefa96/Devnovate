@@ -1,0 +1,22 @@
+# Frontend-specific ignore
+
+node_modules/
+dist/
+dist-ssr/
+.cache/
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Build
+.next/
+.nuxt/
